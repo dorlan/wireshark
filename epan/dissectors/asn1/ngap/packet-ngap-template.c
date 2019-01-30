@@ -8,7 +8,7 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * References: 3GPP TS 38.413 v15.0.0 (2018-06)
+ * References: 3GPP TS 38.413 v15.2.0 (2018-12)
  */
 
 #include "config.h"
@@ -27,11 +27,14 @@
 #include "packet-per.h"
 #include "packet-e212.h"
 #include "packet-s1ap.h"
+#include "packet-ranap.h"
 #include "packet-lte-rrc.h"
 #include "packet-nr-rrc.h"
 #include "packet-gsm_map.h"
 #include "packet-cell_broadcast.h"
 #include "packet-ntp.h"
+#include "packet-gsm_a_common.h"
+#include "packet-http.h"
 
 #define PNAME  "NG Application Protocol"
 #define PSNAME "NGAP"
@@ -44,9 +47,13 @@ void proto_register_ngap(void);
 void proto_reg_handoff_ngap(void);
 
 static dissector_handle_t ngap_handle;
+static dissector_handle_t ngap_media_type_handle;
 static dissector_handle_t nas_5gs_handle;
 static dissector_handle_t nr_rrc_ue_radio_paging_info_handle;
 static dissector_handle_t nr_rrc_ue_radio_access_cap_info_handle;
+static dissector_handle_t lte_rrc_ue_radio_paging_info_handle;
+
+static dissector_table_t ngap_n2_sm_dissector_table;
 
 #include "packet-ngap-val.h"
 
@@ -102,9 +109,14 @@ static gint ett_ngap_NrencryptionAlgorithms = -1;
 static gint ett_ngap_NrintegrityProtectionAlgorithms = -1;
 static gint ett_ngap_EUTRAencryptionAlgorithms = -1;
 static gint ett_ngap_EUTRAintegrityProtectionAlgorithms = -1;
-static gint ett_ngap_UERadioCapabilityForPaging = -1;
+static gint ett_ngap_UERadioCapabilityForPagingOfNR = -1;
+static gint ett_ngap_UERadioCapabilityForPagingOfEUTRA = -1;
 static gint ett_ngap_UERadioCapability = -1;
 static gint ett_ngap_LastVisitedEUTRANCellInformation = -1;
+static gint ett_ngap_LastVisitedUTRANCellInformation = -1;
+static gint ett_ngap_LastVisitedGERANCellInformation = -1;
+static gint ett_ngap_NASSecurityParametersFromNGRAN = -1;
+static gint ett_ngap_NASC = -1;
 #include "packet-ngap-ett.c"
 
 static expert_field ei_ngap_number_pages_le15 = EI_INIT;
@@ -412,6 +424,22 @@ dissect_ngap(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data _U_
   return dissect_NGAP_PDU_PDU(tvb, pinfo, ngap_tree, NULL);
 }
 
+/*
+ * 6.1.6.4.3 N2 SM Information
+ * N2 SM Information shall encode NG Application Protocol (NGAP) IEs, as specified in subclause 9.3 of 3GPP TS 38.413 [9] (ASN.1 encoded),
+ * using the vnd.3gpp.ngap content-type.
+ */
+static int
+dissect_ngap_media_type(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data)
+{
+    http_message_info_t *message_info = (http_message_info_t *)data;
+
+    if (! message_info->content_id)
+        return 0;
+
+    return (dissector_try_string(ngap_n2_sm_dissector_table, message_info->content_id, tvb, pinfo, tree, NULL)) ? tvb_captured_length(tvb) : 0;
+}
+
 /*--- proto_reg_handoff_ngap ---------------------------------------*/
 void
 proto_reg_handoff_ngap(void)
@@ -423,10 +451,14 @@ proto_reg_handoff_ngap(void)
     nas_5gs_handle = find_dissector_add_dependency("nas-5gs", proto_ngap);
     nr_rrc_ue_radio_paging_info_handle = find_dissector_add_dependency("nr-rrc.ue_radio_paging_info", proto_ngap);
     nr_rrc_ue_radio_access_cap_info_handle = find_dissector_add_dependency("nr-rrc.ue_radio_access_cap_info", proto_ngap);
+    lte_rrc_ue_radio_paging_info_handle = find_dissector_add_dependency("lte-rrc.ue_radio_paging_info", proto_ngap);
     dissector_add_for_decode_as("sctp.port", ngap_handle);
     dissector_add_uint("sctp.ppi", NGAP_PROTOCOL_ID,   ngap_handle);
     Initialized=TRUE;
 #include "packet-ngap-dis-tab.c"
+    dissector_add_string("ngap.n2.sm", "PduSessionResourceReleaseCommandTransfer", create_dissector_handle(dissect_PDUSessionResourceReleaseCommandTransfer_PDU, proto_ngap));
+
+    dissector_add_string("media_type", "application/vnd.3gpp.ngap", ngap_media_type_handle);
   } else {
     if (SctpPort != 0) {
       dissector_delete_uint("sctp.port", SctpPort, ngap_handle);
@@ -590,9 +622,14 @@ void proto_register_ngap(void) {
     &ett_ngap_NrintegrityProtectionAlgorithms,
     &ett_ngap_EUTRAencryptionAlgorithms,
     &ett_ngap_EUTRAintegrityProtectionAlgorithms,
-    &ett_ngap_UERadioCapabilityForPaging,
+    &ett_ngap_UERadioCapabilityForPagingOfNR,
+    &ett_ngap_UERadioCapabilityForPagingOfEUTRA,
     &ett_ngap_UERadioCapability,
     &ett_ngap_LastVisitedEUTRANCellInformation,
+    &ett_ngap_LastVisitedUTRANCellInformation,
+    &ett_ngap_LastVisitedGERANCellInformation,
+    &ett_ngap_NASSecurityParametersFromNGRAN,
+    &ett_ngap_NASC,
 #include "packet-ngap-ettarr.c"
   };
 
@@ -613,6 +650,7 @@ void proto_register_ngap(void) {
 
   /* Register dissector */
   ngap_handle = register_dissector("ngap", dissect_ngap, proto_ngap);
+  ngap_media_type_handle = register_dissector("ngap_media_type", dissect_ngap_media_type, proto_ngap);
 
   /* Register dissector tables */
   ngap_ies_dissector_table = register_dissector_table("ngap.ies", "NGAP-PROTOCOL-IES", proto_ngap, FT_UINT32, BASE_DEC);
@@ -622,6 +660,10 @@ void proto_register_ngap(void) {
   ngap_proc_imsg_dissector_table = register_dissector_table("ngap.proc.imsg", "NGAP-ELEMENTARY-PROCEDURE InitiatingMessage", proto_ngap, FT_UINT32, BASE_DEC);
   ngap_proc_sout_dissector_table = register_dissector_table("ngap.proc.sout", "NGAP-ELEMENTARY-PROCEDURE SuccessfulOutcome", proto_ngap, FT_UINT32, BASE_DEC);
   ngap_proc_uout_dissector_table = register_dissector_table("ngap.proc.uout", "NGAP-ELEMENTARY-PROCEDURE UnsuccessfulOutcome", proto_ngap, FT_UINT32, BASE_DEC);
+
+  /* 3GPP TS 29.502 */
+  ngap_n2_sm_dissector_table = register_dissector_table("ngap.n2.sm", "NGAP N2 SM Information table", proto_ngap, FT_STRING, BASE_NONE);
+
 
   /* Register configuration options for ports */
   ngap_module = prefs_register_protocol(proto_ngap, proto_reg_handoff_ngap);

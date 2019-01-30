@@ -54,7 +54,6 @@
 #endif
 
 #ifdef _WIN32
-#include <wsutil/unicode-utils.h>
 #include <process.h>    /* getpid */
 #include <winsock2.h>
 #endif
@@ -63,9 +62,8 @@
 # include "wsutil/strptime.h"
 #endif
 
-#include <wsutil/crash_info.h>
-#include <wsutil/clopts_common.h>
-#include <wsutil/cmdarg_err.h>
+#include <ui/clopts_common.h>
+#include <ui/cmdarg_err.h>
 #include <wsutil/filesystem.h>
 #include <wsutil/file_util.h>
 #include <wsutil/wsgcrypt.h>
@@ -74,6 +72,7 @@
 #include <wsutil/report_message.h>
 #include <wsutil/strnatcmp.h>
 #include <wsutil/str_util.h>
+#include <cli_main.h>
 #include <version_info.h>
 #include <wsutil/pint.h>
 #include <wsutil/strtoi.h>
@@ -836,6 +835,8 @@ print_usage(FILE *output)
     fprintf(output, "  -T <encap type>        set the output file encapsulation type; default is the\n");
     fprintf(output, "                         same as the input file. An empty \"-T\" option will\n");
     fprintf(output, "                         list the encapsulation types.\n");
+    fprintf(output, "  --inject-secrets <type>,<file>  Insert decryption secrets from <file>. List\n");
+    fprintf(output, "                         supported secret types with \"--inject-secrets help\".\n");
     fprintf(output, "\n");
     fprintf(output, "Miscellaneous:\n");
     fprintf(output, "  -h                     display this help and exit.\n");
@@ -901,9 +902,9 @@ list_encap_types(FILE *stream) {
     encaps = (struct string_elem *)g_malloc(sizeof(struct string_elem) * WTAP_NUM_ENCAP_TYPES);
     fprintf(stream, "editcap: The available encapsulation types for the \"-T\" flag are:\n");
     for (i = 0; i < WTAP_NUM_ENCAP_TYPES; i++) {
-        encaps[i].sstr = wtap_encap_short_string(i);
+        encaps[i].sstr = wtap_encap_name(i);
         if (encaps[i].sstr != NULL) {
-            encaps[i].lstr = wtap_encap_string(i);
+            encaps[i].lstr = wtap_encap_description(i);
             list = g_slist_insert_sorted(list, &encaps[i], string_nat_compare);
         }
     }
@@ -982,11 +983,9 @@ editcap_dump_open(const char *filename, const wtap_dump_params *params,
   return pdh;
 }
 
-static int
-real_main(int argc, char *argv[])
+int
+main(int argc, char *argv[])
 {
-    GString      *comp_info_str;
-    GString      *runtime_info_str;
     char         *init_progfile_dir_error;
     wtap         *wth = NULL;
     int           i, j, read_err, write_err;
@@ -1042,21 +1041,8 @@ real_main(int argc, char *argv[])
     create_app_running_mutex();
 #endif /* _WIN32 */
 
-    /* Get the compile-time version information string */
-    comp_info_str = get_compiled_version_info(NULL, NULL);
-
-    /* Get the run-time version information string */
-    runtime_info_str = get_runtime_version_info(NULL);
-
-    /* Add it to the information to be reported on a crash. */
-    ws_add_crash_info("Editcap (Wireshark) %s\n"
-         "\n"
-         "%s"
-         "\n"
-         "%s",
-      get_ws_vcs_version_info(), comp_info_str->str, runtime_info_str->str);
-    g_string_free(comp_info_str, TRUE);
-    g_string_free(runtime_info_str, TRUE);
+    /* Initialize the version information. */
+    ws_init_version_info("Editcap (Wireshark)", NULL, NULL, NULL);
 
     /*
      * Get credential information for later use.
@@ -1116,13 +1102,17 @@ real_main(int argc, char *argv[])
                 goto clean_exit;
             }
             gchar **splitted = g_strsplit(optarg, ",", 2);
-            if (splitted[0]) {
+            if (splitted[0] && splitted[0][0] != '\0') {
                 secrets_type_id = lookup_secrets_type(splitted[0]);
+                if (secrets_type_id == 0) {
+                    fprintf(stderr, "editcap: \"%s\" isn't a valid secrets type\n", splitted[0]);
+                    g_strfreev(splitted);
+                    ret = INVALID_OPTION;
+                    goto clean_exit;
+                }
                 secrets_filename = splitted[1];
-            }
-
-            if (secrets_type_id == 0) {
-                fprintf(stderr, "editcap: \"%s\" isn't a valid secrets type\n", secrets_filename);
+            } else {
+                fprintf(stderr, "editcap: no secrets type was specified for --inject-secrets\n");
                 g_strfreev(splitted);
                 ret = INVALID_OPTION;
                 goto clean_exit;
@@ -1278,10 +1268,7 @@ real_main(int argc, char *argv[])
             break;
 
         case 'h':
-            printf("Editcap (Wireshark) %s\n"
-                   "Edit and/or translate the format of capture files.\n"
-                   "See https://www.wireshark.org for more information.\n",
-               get_ws_vcs_version_info());
+            show_help_header("Edit and/or translate the format of capture files.");
             print_usage(stdout);
             goto clean_exit;
             break;
@@ -1326,7 +1313,7 @@ real_main(int argc, char *argv[])
             break;
 
         case 'T':
-            out_frame_type = wtap_short_string_to_encap(optarg);
+            out_frame_type = wtap_name_to_encap(optarg);
             if (out_frame_type < 0) {
                 fprintf(stderr, "editcap: \"%s\" isn't a valid encapsulation type\n\n",
                         optarg);
@@ -1341,11 +1328,7 @@ real_main(int argc, char *argv[])
             break;
 
         case 'V':
-            comp_info_str = get_compiled_version_info(NULL, NULL);
-            runtime_info_str = get_runtime_version_info(NULL);
-            show_version("Editcap (Wireshark)", comp_info_str, runtime_info_str);
-            g_string_free(comp_info_str, TRUE);
-            g_string_free(runtime_info_str, TRUE);
+            show_version();
             goto clean_exit;
             break;
 
@@ -1456,8 +1439,8 @@ real_main(int argc, char *argv[])
     if (skip_radiotap == TRUE && wtap_file_encap(wth) != WTAP_ENCAP_IEEE_802_11_RADIOTAP) {
         fprintf(stderr, "editcap: can't skip radiotap header because input file is incorrect\n");
         fprintf(stderr, "editcap: expected '%s', input is '%s'\n",
-                wtap_encap_string(WTAP_ENCAP_IEEE_802_11_RADIOTAP),
-                wtap_encap_string(wtap_file_type_subtype(wth)));
+                wtap_encap_description(WTAP_ENCAP_IEEE_802_11_RADIOTAP),
+                wtap_encap_description(wtap_file_type_subtype(wth)));
         ret = INVALID_OPTION;
         goto clean_exit;
     }
@@ -1560,9 +1543,9 @@ real_main(int argc, char *argv[])
             }
             g_assert(filename);
 
-            /* If we don't have an application name add Editcap */
+            /* If we don't have an application name add one */
             if (wtap_block_get_string_option_value(g_array_index(params.shb_hdrs, wtap_block_t, 0), OPT_SHB_USERAPPL, &shb_user_appl) != WTAP_OPTTYPE_SUCCESS) {
-                wtap_block_add_string_option_format(g_array_index(params.shb_hdrs, wtap_block_t, 0), OPT_SHB_USERAPPL, "Editcap " VERSION);
+                wtap_block_add_string_option_format(g_array_index(params.shb_hdrs, wtap_block_t, 0), OPT_SHB_USERAPPL, "%s", get_appname_and_version());
             }
 
             pdh = editcap_dump_open(filename, &params, &write_err);
@@ -1962,7 +1945,8 @@ real_main(int argc, char *argv[])
                 if (comment != NULL) {
                     /* Copy and change rather than modify returned rec */
                     temp_rec = *rec;
-                    temp_rec.opt_comment = g_strdup(comment);
+                    /* The comment is not modified by dumper, cast away. */
+                    temp_rec.opt_comment = (char *)comment;
                     temp_rec.has_comment_changed = TRUE;
                     rec = &temp_rec;
                 } else {
@@ -2050,23 +2034,6 @@ clean_exit:
     free_progdirs();
     return ret;
 }
-
-#ifdef _WIN32
-int
-wmain(int argc, wchar_t *wc_argv[])
-{
-    char **argv;
-
-    argv = arg_list_utf_16to8(argc, wc_argv);
-    return real_main(argc, argv);
-}
-#else
-int
-main(int argc, char *argv[])
-{
-    return real_main(argc, argv);
-}
-#endif
 
 /* Skip meta-information read from file to return offset of real
  * protocol data */

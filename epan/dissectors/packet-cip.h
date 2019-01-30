@@ -460,6 +460,9 @@ typedef struct cip_connID_info {
    address ipaddress;
    guint16 port;
    guint8  type;
+
+   // Actual Packet Interval in microseconds.
+   guint32 api;
 } cip_connID_info_t;
 
 enum cip_safety_format_type {CIP_SAFETY_BASE_FORMAT, CIP_SAFETY_EXTENDED_FORMAT};
@@ -487,6 +490,8 @@ typedef struct cip_conn_info {
    cip_safety_epath_info_t safety;
    guint32                 ClassID;
    guint32                 ConnPoint;
+   guint32                 FwdOpenPathLenBytes;
+   void                    *pFwdOpenPathData;
 } cip_conn_info_t;
 
 typedef struct cip_req_info {
@@ -522,6 +527,7 @@ enum cip_elem_data_types {
 
 extern void add_cip_service_to_info_column(packet_info *pinfo, guint8 service, const value_string* service_vals);
 extern attribute_info_t* cip_get_attribute(guint class_id, guint instance, guint attribute);
+extern void cip_rpi_api_fmt(gchar *s, guint32 value);
 
 extern int  dissect_cip_attribute(packet_info *pinfo, proto_tree *tree, proto_item *item, tvbuff_t *tvb, attribute_info_t* attr, int offset, int total_len);
 extern void dissect_cip_data(proto_tree *item_tree, tvbuff_t *tvb, int offset, packet_info *pinfo, cip_req_info_t *preq_info, proto_item* msp_item, gboolean is_msp_item);

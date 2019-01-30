@@ -284,6 +284,8 @@ extern "C" {
 #define WTAP_ENCAP_RUBY_MARSHAL                 201
 #define WTAP_ENCAP_RFC7468                      202
 #define WTAP_ENCAP_SYSTEMD_JOURNAL              203 /* Event, not a packet */
+#define WTAP_ENCAP_EBHSCR                       204
+#define WTAP_ENCAP_VPP                          205
 
 /* After adding new item here, please also add new item to encap_table_base array */
 
@@ -407,6 +409,7 @@ extern "C" {
  * allocate a buffer much larger than necessary, wasting memory.
  */
 #define WTAP_MAX_PACKET_SIZE_STANDARD    262144
+#define WTAP_MAX_PACKET_SIZE_EBHSCR      (8*1024*1024)
 #define WTAP_MAX_PACKET_SIZE_DBUS        (128*1024*1024)
 
 /*
@@ -2054,11 +2057,11 @@ WS_DLL_PUBLIC
 void wtap_free_extensions_list(GSList *extensions);
 
 WS_DLL_PUBLIC
-const char *wtap_encap_string(int encap);
+const char *wtap_encap_name(int encap);
 WS_DLL_PUBLIC
-const char *wtap_encap_short_string(int encap);
+const char *wtap_encap_description(int encap);
 WS_DLL_PUBLIC
-int wtap_short_string_to_encap(const char *short_name);
+int wtap_name_to_encap(const char *short_name);
 
 WS_DLL_PUBLIC
 const char* wtap_tsprec_string(int tsprec);
@@ -2108,7 +2111,7 @@ WS_DLL_PUBLIC
 void wtap_deregister_file_type_subtype(const int file_type_subtype);
 
 WS_DLL_PUBLIC
-int wtap_register_encap_type(const char* name, const char* short_name);
+int wtap_register_encap_type(const char *description, const char *name);
 
 /*** Cleanup the interal library structures */
 WS_DLL_PUBLIC

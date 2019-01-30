@@ -134,17 +134,21 @@ static dissector_handle_t bgp_handle;
 #define BGP_OPTION_AUTHENTICATION    1   /* RFC1771 */
 #define BGP_OPTION_CAPABILITY        2   /* RFC2842 */
 
-/* https://www.iana.org/assignments/capability-codes/ (last updated 2015-09-30) */
+/* https://www.iana.org/assignments/capability-codes.xhtml (last updated 2018-08-21) */
 /* BGP capability code */
-#define BGP_CAPABILITY_RESERVED                     0   /* RFC2434 */
-#define BGP_CAPABILITY_MULTIPROTOCOL                1   /* RFC2858 */
-#define BGP_CAPABILITY_ROUTE_REFRESH                2   /* RFC2918 */
-#define BGP_CAPABILITY_COOPERATIVE_ROUTE_FILTERING  3   /* RFC5291 */
-#define BGP_CAPABILITY_MULTIPLE_ROUTE_DEST          4   /* RFC3107 */
-#define BGP_CAPABILITY_EXTENDED_NEXT_HOP            5   /* RFC5549 */
-#define BGP_CAPABILITY_EXTENDED_MESSAGE             6   /* draft-ietf-idr-bgp-extended-messages */
+#define BGP_CAPABILITY_RESERVED                      0  /* RFC5492 */
+#define BGP_CAPABILITY_MULTIPROTOCOL                 1  /* RFC2858 */
+#define BGP_CAPABILITY_ROUTE_REFRESH                 2  /* RFC2918 */
+#define BGP_CAPABILITY_COOPERATIVE_ROUTE_FILTERING   3  /* RFC5291 */
+#define BGP_CAPABILITY_MULTIPLE_ROUTE_DEST           4  /* RFC8277 Deprecated */
+#define BGP_CAPABILITY_EXTENDED_NEXT_HOP             5  /* RFC5549 */
+#define BGP_CAPABILITY_EXTENDED_MESSAGE              6  /* draft-ietf-idr-bgp-extended-messages */
+#define BGP_CAPABILITY_BGPSEC                        7  /* RFC8205 */
+#define BGP_CAPABILITY_MULTIPLE_LABELS               8  /* RFC8277 */
+#define BGP_CAPABILITY_BGP_ROLE                      9  /* draft-ietf-idr-bgp-open-policy */
 #define BGP_CAPABILITY_GRACEFUL_RESTART             64  /* RFC4724 */
 #define BGP_CAPABILITY_4_OCTET_AS_NUMBER            65  /* RFC6793 */
+#define BGP_CAPABILITY_DYNAMIC_CAPABILITY_CISCO     66  /* Cisco Dynamic capabaility*/
 #define BGP_CAPABILITY_DYNAMIC_CAPABILITY           67  /* draft-ietf-idr-dynamic-cap */
 #define BGP_CAPABILITY_MULTISESSION                 68  /* draft-ietf-idr-bgp-multisession */
 #define BGP_CAPABILITY_ADDITIONAL_PATHS             69  /* [RFC7911] */
@@ -1279,8 +1283,12 @@ static const value_string capability_vals[] = {
     { BGP_CAPABILITY_MULTIPLE_ROUTE_DEST,           "Multiple routes to a destination capability" },
     { BGP_CAPABILITY_EXTENDED_NEXT_HOP,             "Extended Next Hop Encoding" },
     { BGP_CAPABILITY_EXTENDED_MESSAGE,              "BGP-Extended Message" },
+    { BGP_CAPABILITY_BGPSEC,                        "BGPsec capability" },
+    { BGP_CAPABILITY_MULTIPLE_LABELS,               "Multiple Labels capability" },
+    { BGP_CAPABILITY_BGP_ROLE,                      "BGP Role" },
     { BGP_CAPABILITY_GRACEFUL_RESTART,              "Graceful Restart capability" },
     { BGP_CAPABILITY_4_OCTET_AS_NUMBER,             "Support for 4-octet AS number capability" },
+    { BGP_CAPABILITY_DYNAMIC_CAPABILITY_CISCO,      "Deprecated Dynamic Capability (Cisco)" },
     { BGP_CAPABILITY_DYNAMIC_CAPABILITY,            "Support for Dynamic capability" },
     { BGP_CAPABILITY_MULTISESSION,                  "Multisession BGP Capability" },
     { BGP_CAPABILITY_ADDITIONAL_PATHS,              "Support for Additional Paths" },
@@ -5276,6 +5284,11 @@ decode_prefix_MP(proto_tree *tree, int hf_path_id, int hf_addr4, int hf_addr6,
                 total_length += (1 + labnum*3) + length;
                 proto_tree_add_ipv6(prefix_tree, hf_addr6, tvb, offset, length, &ip6addr);
                 break;
+            case SAFNUM_MCAST_VPN:
+                total_length = decode_mcast_vpn_nlri(tree, tvb, offset, afi);
+                if (total_length < 0)
+                    return -1;
+                break;
             case SAFNUM_ENCAPSULATION:
                 plen =  tvb_get_guint8(tvb, offset);
                 if (plen != 128){
@@ -7265,38 +7278,58 @@ dissect_bgp_path_attr(proto_tree *subtree, tvbuff_t *tvb, guint16 path_attr_len,
                                                          "Next hop network address (%d byte%s)",
                                                          nexthop_len, plurality(nexthop_len, "", "s"));
 
-                /*
-                 * The addresses don't contain lengths, so if we
-                 * don't understand the address family type, we
-                 * cannot parse the subsequent addresses as we
-                 * don't know how long they are.
+                /* RFC 8514 defines that the Next Hop field of the MP_REACH_NLRI attribute of the route MUST
+                 * be set to the same IP address as the one carried in the Originating Router's IP Address field.
+                 * Therefore we have to get the upper layer protocol for MCAST-VPN saf.
                  */
-                switch (af) {
-                    default:
-                    proto_tree_add_expert(subtree3, pinfo, &ei_bgp_unknown_afi, tvb, o + i + aoff + 4, nexthop_len);
-                    break;
 
-                    case AFNUM_INET:
-                    case AFNUM_INET6:
-                    case AFNUM_L2VPN:
-                    case AFNUM_L2VPN_OLD:
-                    case AFNUM_BGP_LS:
+                if ( saf == SAFNUM_MCAST_VPN ) {
+                    if (proto_is_frame_protocol(pinfo->layers, "ip") && nexthop_len == 4) {
+                        proto_tree_add_string(subtree3, hf_bgp_update_path_attribute_mp_reach_nlri_next_hop, tvb,
+                                             o + i + aoff + 4, nexthop_len, tvb_ip_to_str(tvb, o + i + aoff + 4));
+                    } else if (proto_is_frame_protocol(pinfo->layers, "ipv6") && nexthop_len == 16) {
+                        proto_tree_add_string(subtree3, hf_bgp_update_path_attribute_mp_reach_nlri_next_hop, tvb,
+                                             o + i + aoff + 4, nexthop_len, tvb_ip6_to_str(tvb, o + i + aoff + 4));
+                    } else {
+                        proto_tree_add_string(subtree3, hf_bgp_update_path_attribute_mp_reach_nlri_next_hop, tvb,
+                                             o + i + aoff + 4, nexthop_len, tvb_bytes_to_str(wmem_packet_scope(),
+                                             tvb, o + i + aoff + 4, nexthop_len));
+                    }
+                } else {
+                    /*
+                     * The addresses don't contain lengths, so if we
+                     * don't understand the address family type, we
+                     * cannot parse the subsequent addresses as we
+                     * don't know how long they are.
+                     */
 
-                        j = 0;
-                        while (j < nexthop_len) {
-                            advance = mp_addr_to_str(af, saf, tvb, o + i + aoff + 4 + j,
-                                                     junk_emstr, nexthop_len) ;
-                            if (advance == 0) /* catch if this is a unknown AFI type*/
-                                break;
-                            if (j + advance > nexthop_len)
-                                break;
-                            proto_tree_add_string(subtree3, hf_bgp_update_path_attribute_mp_reach_nlri_next_hop, tvb,
-                                                 o + i + aoff + 4 + j, advance, wmem_strbuf_get_str(junk_emstr));
-
-                            j += advance;
-                        }
+                    switch (af) {
+                        default:
+                        proto_tree_add_expert(subtree3, pinfo, &ei_bgp_unknown_afi, tvb, o + i + aoff + 4, nexthop_len);
                         break;
-                } /* switch (af) */
+
+                        case AFNUM_INET:
+                        case AFNUM_INET6:
+                        case AFNUM_L2VPN:
+                        case AFNUM_L2VPN_OLD:
+                        case AFNUM_BGP_LS:
+
+                            j = 0;
+                            while (j < nexthop_len) {
+                                advance = mp_addr_to_str(af, saf, tvb, o + i + aoff + 4 + j,
+                                                         junk_emstr, nexthop_len) ;
+                                if (advance == 0) /* catch if this is a unknown AFI type*/
+                                    break;
+                                if (j + advance > nexthop_len)
+                                    break;
+                                proto_tree_add_string(subtree3, hf_bgp_update_path_attribute_mp_reach_nlri_next_hop, tvb,
+                                                     o + i + aoff + 4 + j, advance, wmem_strbuf_get_str(junk_emstr));
+
+                                j += advance;
+                            }
+                            break;
+                    } /* switch (af) */
+                }
 
                 aoff_save = aoff;
                 tlen -= nexthop_len + 4;

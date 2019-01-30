@@ -56,6 +56,7 @@
 #include "srt_table.h"
 #include "stats_tree.h"
 #include "secrets.h"
+#include "funnel.h"
 #include <dtd.h>
 
 #ifdef HAVE_PLUGINS
@@ -307,6 +308,17 @@ epan_cleanup(void)
 	dfilter_cleanup();
 	decode_clear_all();
 
+#ifdef HAVE_LUA
+	/*
+	 * Must deregister Proto objects in Lua before destroying dissector
+	 * tables in packet_cleanup(). Doing so will also deregister and free
+	 * preferences, this must happen before prefs_cleanup(). That will
+	 * update the list of deregistered fields which must be followed by
+	 * proto_cleanup() to complete deallocation.
+	 */
+	wslua_early_cleanup();
+#endif
+
 	/*
 	 * Note: packet_cleanup() will call registered shutdown routines which
 	 * may be used to deregister dynamically registered protocol fields,
@@ -327,6 +339,7 @@ epan_cleanup(void)
 	export_pdu_cleanup();
 	cleanup_enabled_and_disabled_lists();
 	stats_tree_cleanup();
+	funnel_cleanup();
 	dtd_location(NULL);
 #ifdef HAVE_LUA
 	wslua_cleanup();
@@ -715,6 +728,9 @@ epan_get_compiled_version_info(GString *str)
 	g_string_append(str, ", ");
 #ifdef HAVE_LIBGNUTLS
 	g_string_append(str, "with GnuTLS " LIBGNUTLS_VERSION);
+#ifdef HAVE_GNUTLS_PKCS11
+	g_string_append(str, " and PKCS #11 support");
+#endif /* HAVE_GNUTLS_PKCS11 */
 #else
 	g_string_append(str, "without GnuTLS");
 #endif /* HAVE_LIBGNUTLS */

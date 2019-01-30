@@ -22,7 +22,6 @@ set(WIRESHARK_WIDGET_HEADERS
 	widgets/dissector_tables_view.h
 	widgets/drag_drop_toolbar.h
 	widgets/drag_label.h
-	widgets/editor_color_dialog.h
 	widgets/editor_file_dialog.h
 	widgets/expert_info_view.h
 	widgets/export_objects_view.h
@@ -189,6 +188,7 @@ set(WIRESHARK_QT_HEADERS
 	resolved_addresses_dialog.h
 	response_time_delay_dialog.h
 	rpc_service_response_time_dialog.h
+	rsa_keys_frame.h
 	rtp_analysis_dialog.h
 	rtp_audio_stream.h
 	rtp_player_dialog.h
@@ -245,7 +245,6 @@ set(WIRESHARK_WIDGET_SRCS
 	widgets/dissector_tables_view.cpp
 	widgets/drag_drop_toolbar.cpp
 	widgets/drag_label.cpp
-	widgets/editor_color_dialog.cpp
 	widgets/editor_file_dialog.cpp
 	widgets/elided_label.cpp
 	widgets/expert_info_view.cpp
@@ -401,6 +400,7 @@ set(WIRESHARK_QT_SRC
 	resolved_addresses_dialog.cpp
 	response_time_delay_dialog.cpp
 	rpc_service_response_time_dialog.cpp
+	rsa_keys_frame.cpp
 	rtp_analysis_dialog.cpp
 	rtp_audio_stream.cpp
 	rtp_player_dialog.cpp
@@ -525,6 +525,7 @@ set(WIRESHARK_QT_UI
 	progress_frame.ui
 	protocol_hierarchy_dialog.ui
 	resolved_addresses_dialog.ui
+	rsa_keys_frame.ui
 	rtp_analysis_dialog.ui
 	rtp_player_dialog.ui
 	rtp_stream_dialog.ui
@@ -564,6 +565,8 @@ set(WIRESHARK_QT_TS
 	wireshark_ja_JP.ts
 	wireshark_pl.ts
 	wireshark_ru.ts
+	wireshark_sv.ts
+	wireshark_uk.ts
 	wireshark_zh_CN.ts
 )
 
@@ -591,6 +594,15 @@ include_directories(
 set(CMAKE_AUTOMOC TRUE)
 set(CMAKE_AUTOUIC TRUE)
 set(CMAKE_AUTORCC TRUE)
+
+if(NOT Qt5Widgets_VERSION VERSION_LESS "5.9")
+	# Drop the file modification time of source files from generated files
+	# to help with reproducible builds. We do not use QFileInfo.lastModified
+	# so this has no unwanted side effects. This mtime started appearing in
+	# Qt 5.8. The option to force the old file format without mtime was
+	# added in Qt 5.9. See https://bugreports.qt.io/browse/QTBUG-58769
+	set(CMAKE_AUTORCC_OPTIONS --format-version 1)
+endif()
 
 QT5_ADD_TRANSLATION(WIRESHARK_QT_QM ${WIRESHARK_QT_TS})
 
@@ -625,7 +637,7 @@ source_group("ui\\Models Source" FILES ${WIRESHARK_MODEL_SRCS})
 source_group("ui\\Manager Headers" FILES ${WIRESHARK_MANAGER_HEADERS})
 source_group("ui\\Manager Source" FILES ${WIRESHARK_MANAGER_SRCS})
 
-add_library(qtui STATIC
+add_library(qtui OBJECT
 	#Included so that Visual Studio can properly put header files in solution
 	${WIRESHARK_QT_HEADERS}
 	${WIRESHARK_WIDGET_HEADERS}
@@ -646,15 +658,26 @@ add_library(qtui STATIC
 	${WIRESHARK_QT_TAP_SRC}
 	wireshark-tap-register.c
 )
+
+target_include_directories(qtui SYSTEM
+	PUBLIC
+		${QT_INCLUDE_DIRS}
+		${WINSPARKLE_INCLUDE_DIRS}
+	PRIVATE
+		${PCAP_INCLUDE_DIRS}
+)
+
+target_compile_definitions(qtui
+	PUBLIC
+		${QT_COMPILE_DEFINITIONS}
+)
+
 set_target_properties(qtui PROPERTIES
 	LINK_FLAGS "${WS_LINK_FLAGS}"
 	FOLDER "UI"
 	# Ensure .qm files are generated before autogenerating i18n.qrc
 	AUTOGEN_TARGET_DEPENDS "${WIRESHARK_QT_QM}"
 )
-if(WIN32)
-	target_link_libraries(qtui "UxTheme.lib")
-endif()
 
 #
 # Editor modelines  -  http://www.wireshark.org/tools/modelines.html

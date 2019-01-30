@@ -267,7 +267,8 @@ Iax2AnalysisDialog::Iax2AnalysisDialog(QWidget &parent, CaptureFile &cf) :
         ui->actionSaveReverseAudio->setEnabled(false);
     }
 
-    QMenu *save_menu = new QMenu();
+    QPushButton *save_bt = ui->buttonBox->button(QDialogButtonBox::Save);
+    QMenu *save_menu = new QMenu(save_bt);
     save_menu->addAction(ui->actionSaveAudio);
     save_menu->addAction(ui->actionSaveForwardAudio);
     save_menu->addAction(ui->actionSaveReverseAudio);
@@ -277,7 +278,7 @@ Iax2AnalysisDialog::Iax2AnalysisDialog(QWidget &parent, CaptureFile &cf) :
     save_menu->addAction(ui->actionSaveReverseCsv);
     save_menu->addSeparator();
     save_menu->addAction(ui->actionSaveGraph);
-    ui->buttonBox->button(QDialogButtonBox::Save)->setMenu(save_menu);
+    save_bt->setMenu(save_menu);
 
     ui->buttonBox->button(QDialogButtonBox::Close)->setDefault(true);
 
@@ -613,21 +614,21 @@ void Iax2AnalysisDialog::tapReset(void *tapinfoptr)
     iax2_analysis_dialog->resetStatistics();
 }
 
-gboolean Iax2AnalysisDialog::tapPacket(void *tapinfoptr, packet_info *pinfo, struct epan_dissect *, const void *iax2info_ptr)
+tap_packet_status Iax2AnalysisDialog::tapPacket(void *tapinfoptr, packet_info *pinfo, struct epan_dissect *, const void *iax2info_ptr)
 {
     Iax2AnalysisDialog *iax2_analysis_dialog = dynamic_cast<Iax2AnalysisDialog *>((Iax2AnalysisDialog*)tapinfoptr);
-    if (!iax2_analysis_dialog) return FALSE;
+    if (!iax2_analysis_dialog) return TAP_PACKET_DONT_REDRAW;
 
     const iax2_info_t *iax2info = (const iax2_info_t *)iax2info_ptr;
-    if (!iax2info) return FALSE;
+    if (!iax2info) return TAP_PACKET_DONT_REDRAW;
 
     /* we ignore packets that are not displayed */
-    if (pinfo->fd->flags.passed_dfilter == 0)
-        return FALSE;
+    if (pinfo->fd->passed_dfilter == 0)
+        return TAP_PACKET_DONT_REDRAW;
 
     /* we ignore packets that carry no data */
     if (iax2info->payload_len < 1)
-        return FALSE;
+        return TAP_PACKET_DONT_REDRAW;
 
     /* is it the forward direction?  */
     else if ((cmp_address(&(iax2_analysis_dialog->fwd_id_.src_addr), &(pinfo->src)) == 0)
@@ -645,7 +646,7 @@ gboolean Iax2AnalysisDialog::tapPacket(void *tapinfoptr, packet_info *pinfo, str
 
         iax2_analysis_dialog->addPacket(false, pinfo, iax2info);
     }
-    return FALSE;
+    return TAP_PACKET_DONT_REDRAW;
 }
 
 void Iax2AnalysisDialog::tapDraw(void *tapinfoptr)

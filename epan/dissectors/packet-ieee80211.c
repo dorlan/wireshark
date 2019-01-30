@@ -894,7 +894,7 @@ static const value_string ieee80211_reason_code[] = {
   {  9, "STA requesting (re)association is not authenticated with responding STA" },
   { 10, "Disassociated because the information in the Power Capability element is unacceptable" },
   { 11, "Disassociated because the information in the Supported Channels element is unacceptable" },
-  { 12, "Reserved" },
+  { 12, "Disassociated due to BSS transition management" },
   { 13, "Invalid information element, i.e., an information element defined in this standard for which the content does not meet the specifications in Clause 7" },
   { 14, "Message integrity code (MIC) failure" },
   { 15, "4-Way Handshake timeout" },
@@ -6288,7 +6288,7 @@ wlan_conv_get_filter_type(conv_item_t* conv, conv_filter_type_e filter)
 
 static ct_dissector_info_t wlan_ct_dissector_info = {&wlan_conv_get_filter_type};
 
-static int
+static tap_packet_status
 wlan_conversation_packet(void *pct, packet_info *pinfo, epan_dissect_t *edt _U_, const void *vip)
 {
   conv_hash_t *hash = (conv_hash_t*) pct;
@@ -6296,7 +6296,7 @@ wlan_conversation_packet(void *pct, packet_info *pinfo, epan_dissect_t *edt _U_,
 
   add_conversation_table_data(hash, &whdr->src, &whdr->dst, 0, 0, 1, pinfo->fd->pkt_len, &pinfo->rel_ts, &pinfo->abs_ts, &wlan_ct_dissector_info, ENDPOINT_NONE);
 
-  return 1;
+  return TAP_PACKET_REDRAW;
 }
 
 static const char*
@@ -6310,7 +6310,7 @@ wlan_host_get_filter_type(hostlist_talker_t* host, conv_filter_type_e filter)
 
 static hostlist_dissector_info_t wlan_host_dissector_info = {&wlan_host_get_filter_type};
 
-static int
+static tap_packet_status
 wlan_hostlist_packet(void *pit, packet_info *pinfo, epan_dissect_t *edt _U_, const void *vip)
 {
   conv_hash_t *hash = (conv_hash_t*) pit;
@@ -6322,7 +6322,7 @@ wlan_hostlist_packet(void *pit, packet_info *pinfo, epan_dissect_t *edt _U_, con
   add_hostlist_table_data(hash, &whdr->src, 0, TRUE, 1, pinfo->fd->pkt_len, &wlan_host_dissector_info, ENDPOINT_NONE);
   add_hostlist_table_data(hash, &whdr->dst, 0, FALSE, 1, pinfo->fd->pkt_len, &wlan_host_dissector_info, ENDPOINT_NONE);
 
-  return 1;
+  return TAP_PACKET_REDRAW;
 }
 
 static const char*
@@ -6387,6 +6387,101 @@ rcpi_and_power_level_custom(gchar *result, guint8 value)
     g_snprintf(result, ITEM_LABEL_LENGTH, "%d (Reserved)", value);
   else
     g_snprintf(result, ITEM_LABEL_LENGTH, "%d (Measurement not available)", value);
+}
+
+/*
+ * We use this is displaying the ru allocation region.
+ */
+static guint8 global_he_trigger_bw = 0;
+
+static void
+he_ru_allocation_base_custom(gchar *result, guint32 ru_allocation)
+{
+  guint32 tones = 0;
+
+  switch (global_he_trigger_bw) {
+  case 0:
+    if (ru_allocation <= 8) {
+      tones = 26;
+      break;
+    }
+    if (ru_allocation >= 37 && ru_allocation <= 40) {
+      tones = 52;
+      break;
+    }
+    if (ru_allocation >= 53 && ru_allocation <= 54) {
+      tones = 106;
+      break;
+    }
+    if (ru_allocation == 61) {
+      tones = 242;
+      break;
+    }
+    // error
+    break;
+  case 1:
+    if (ru_allocation <= 17) {
+      tones = 26;
+      break;
+    }
+    if (ru_allocation >= 37 && ru_allocation <= 44) {
+      tones = 52;
+      break;
+    }
+    if (ru_allocation >= 53 && ru_allocation <= 56) {
+      tones = 106;
+      break;
+    }
+    if (ru_allocation >= 61 && ru_allocation <= 62) {
+      tones = 242;
+      break;
+    }
+    if (ru_allocation == 65) {
+      tones = 484;
+      break;
+    }
+    // error
+    break;
+  case 2:
+    /* fall-through */
+  case 3:
+    if (ru_allocation <= 16) {
+      tones = 26;
+      break;
+    }
+    if (ru_allocation >= 37 && ru_allocation <= 52) {
+      tones = 52;
+      break;
+    }
+    if (ru_allocation >= 53 && ru_allocation <= 60) {
+      tones = 106;
+      break;
+    }
+    if (ru_allocation >= 61 && ru_allocation <= 64) {
+      tones = 242;
+      break;
+    }
+    if (ru_allocation >= 65 && ru_allocation <= 66) {
+      tones = 484;
+      break;
+    }
+    if (ru_allocation == 67) {
+      tones = 996;
+      break;
+    }
+    if (ru_allocation == 68 && global_he_trigger_bw == 3) {
+      tones = 2*996;
+      break;
+    }
+    break;
+  default:
+    break;
+  }
+
+  if (tones)
+    g_snprintf(result, ITEM_LABEL_LENGTH, "%d (%d tones)", ru_allocation, tones);
+  else
+    g_snprintf(result, ITEM_LABEL_LENGTH, "%d (bogus number of tones)", ru_allocation);
 }
 
 /* ************************************************************************* */
@@ -13641,7 +13736,6 @@ dissect_vendor_ie_rsn(proto_item * item, proto_tree * tree, tvbuff_t * tvb, int 
       proto_tree_add_item(tree, hf_ieee80211_rsn_ie_gtk_reserved2, tvb, offset, 1, ENC_LITTLE_ENDIAN);
       offset += 1;
       proto_tree_add_item(tree, hf_ieee80211_rsn_ie_gtk_key, tvb, offset, tag_len - 3, ENC_NA);
-      offset += tag_len - 3;
       proto_item_append_text(item, ": RSN GTK");
       break;
     }
@@ -13665,7 +13759,6 @@ dissect_vendor_ie_rsn(proto_item * item, proto_tree * tree, tvbuff_t * tvb, int 
       proto_tree_add_item(tree, hf_ieee80211_rsn_ie_igtk_ipn, tvb, offset, 6, ENC_LITTLE_ENDIAN);
       offset += 6;
       proto_tree_add_item(tree, hf_ieee80211_rsn_ie_igtk_key, tvb, offset, tag_len - 9, ENC_NA);
-      offset += tag_len - 9;
       proto_item_append_text(item, ": RSN IGTK");
       break;
     }
@@ -20409,12 +20502,15 @@ dissect_ess_report(tvbuff_t *tvb, packet_info *pinfo _U_,
                                     ess_info_field_headers,
                                     ENC_LITTLE_ENDIAN, BMT_NO_APPEND);
   if (bss_trans_thresh == 63)
-    proto_tree_add_int_format(tree, hf_he_ess_report_recommend_transition_thresh, tvb,
-                        offset, 1, bss_trans_thresh, " (%ddBm)",
-                        -100 + bss_trans_thresh);
-  else
     proto_tree_add_int_format(tree, hf_he_ess_report_recommend_transition_thresh,
-                        tvb, offset, 1, bss_trans_thresh, " (No recommendation)");
+                        tvb, offset, 1, bss_trans_thresh,
+                        "Recommended BSS Transition Threshold: %d (No recommendation)",
+                        bss_trans_thresh);
+  else
+    proto_tree_add_int_format(tree, hf_he_ess_report_recommend_transition_thresh, tvb,
+                        offset, 1, bss_trans_thresh,
+                        "Recommended BSS Transition Threshold: %d (%ddBm)",
+                        bss_trans_thresh, -100 + bss_trans_thresh);
 }
 
 /*
@@ -22695,11 +22791,6 @@ static const int *common_info_headers[] = {
   NULL
 };
 
-/*
- * We use this is displaying the ru allocation region.
- */
-static guint8 global_he_trigger_bw = 0;
-
 static int
 add_he_trigger_common_info(proto_tree *tree, tvbuff_t *tvb, int offset,
   packet_info *pinfo _U_, guint8 trigger_type, int *frame_len)
@@ -24295,7 +24386,7 @@ dissect_ieee80211_common(tvbuff_t *tvb, packet_info *pinfo,
          * data: last seq_control seen and frame number
          */
         retransmitted = FALSE;
-        if (!pinfo->fd->flags.visited) {
+        if (!pinfo->fd->visited) {
           retransmit_key key;
           retransmit_key *result;
 
@@ -24341,7 +24432,7 @@ dissect_ieee80211_common(tvbuff_t *tvb, packet_info *pinfo,
         }
       }
 
-      if (enable_decryption && !pinfo->fd->flags.visited) {
+      if (enable_decryption && !pinfo->fd->visited && (len == reported_len)) {
         /* The processing will take care of 4-way handshake sessions for WPA and WPA2 decryption */
         next_tvb = try_decrypt(tvb, pinfo, hdr_len, reported_len, TRUE,
                                &algorithm, &sec_header, &sec_trailer, &used_key);
@@ -24373,7 +24464,7 @@ dissect_ieee80211_common(tvbuff_t *tvb, packet_info *pinfo,
 
     if (next_tvb) {
       /* Already decrypted when searching for keys above. No need to decrypt again */
-    } else {
+    } else if (len == reported_len) {
       next_tvb = try_decrypt(tvb, pinfo, hdr_len, reported_len, FALSE,
                              &algorithm, &sec_header, &sec_trailer, &used_key);
     }
@@ -27945,7 +28036,7 @@ proto_register_ieee80211(void)
 
     {&hf_ieee80211_ff_timestamp,
      {"Timestamp", "wlan.fixed.timestamp",
-      FT_UINT64, BASE_HEX, NULL, 0,
+      FT_UINT64, BASE_DEC, NULL, 0,
       NULL, HFILL }},
 
     {&hf_ieee80211_ff_auth_alg,
@@ -33758,7 +33849,7 @@ proto_register_ieee80211(void)
 
     {&hf_ieee80211_he_trs_ru_allocation,
      {"RU Allocation", "wlan.htc.he.a_control.umrs.ru_allocation",
-      FT_UINT32, BASE_HEX, NULL, 0x00001fe0, NULL, HFILL }},
+      FT_UINT32, BASE_DEC, NULL, 0x00001fe0, NULL, HFILL }},
 
     {&hf_ieee80211_he_dl_tx_power,
      {"DL Tx Power", "wlan.htc.he.a_control.umrs.dl_tx_power",
@@ -34068,7 +34159,8 @@ proto_register_ieee80211(void)
 
     {&hf_ieee80211_he_trigger_ru_allocation,
      {"RU Allocation", "wlan.trigger.he.ru_allocation",
-      FT_UINT40, BASE_HEX, NULL, 0x00000FE000, NULL, HFILL }},
+      FT_UINT40, BASE_CUSTOM, CF_FUNC(he_ru_allocation_base_custom),
+      0x00000FE000, NULL, HFILL }},
 
     {&hf_ieee80211_he_trigger_ul_fec_coding_type,
      {"Coding Type", "wlan.trigger.he.coding_type",
@@ -36229,7 +36321,7 @@ proto_register_ieee80211(void)
 
     {&hf_he_ess_report_recommend_transition_thresh,
      {"Recommended BSS Transition Threshold", "wlan.ext_tag.ess_report.ess_info.thresh",
-     FT_UINT8, BASE_DEC, NULL, 0xFC, NULL, HFILL }},
+     FT_INT8, BASE_DEC, NULL, 0xFC, NULL, HFILL }},
 
     {&hf_he_uora_field,
      {"UL OFDMA-based Random Access Parameter SET", "wlan.ext_tag.uora_parameter_set.field",

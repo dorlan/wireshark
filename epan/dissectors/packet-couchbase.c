@@ -279,6 +279,10 @@
 #define PROTOCOL_BINARY_DCP_BUFFER_ACKNOWLEDGEMENT  0x5d
 #define PROTOCOL_BINARY_DCP_CONTROL                 0x5e
 #define PROTOCOL_BINARY_DCP_SYSTEM_EVENT            0x5f
+#define PROTOCOL_BINARY_DCP_PREPARE                 0x60
+#define PROTOCOL_BINARY_DCP_SEQNO_ACK               0x61
+#define PROTOCOL_BINARY_DCP_COMMIT                  0x62
+#define PROTOCOL_BINARY_DCP_ABORT                   0x63
 
 #define PROTOCOL_BINARY_CMD_GET_RANDOM_KEY          0xb6
 #define PROTOCOL_BINARY_CMD_SEQNO_PERSISTENCE       0xb7
@@ -378,6 +382,12 @@ static int hf_extras_initial = -1;
 static int hf_extras_unknown = -1;
 static int hf_extras_by_seqno = -1;
 static int hf_extras_rev_seqno = -1;
+static int hf_extras_by_seqno_mem = -1;
+static int hf_extras_by_seqno_disk = -1;
+static int hf_extras_prepared_seqno = -1;
+static int hf_extras_commit_seqno = -1;
+static int hf_extras_abort_seqno = -1;
+static int hf_extras_deleted = -1;
 static int hf_extras_lock_time = -1;
 static int hf_extras_nmeta = -1;
 static int hf_extras_nru = -1;
@@ -436,6 +446,8 @@ static int hf_meta_cas = -1;
 static int hf_skip_conflict = -1;
 static int hf_force_accept = -1;
 static int hf_regenerate_cas = -1;
+static int hf_force_meta = -1;
+static int hf_is_expiration = -1;
 static int hf_meta_options = -1;
 static int hf_metalen = -1;
 static int hf_meta_reqextmeta = -1;
@@ -703,6 +715,10 @@ static const value_string opcode_vals[] = {
   { PROTOCOL_BINARY_DCP_BUFFER_ACKNOWLEDGEMENT,     "DCP Buffer Acknowledgement"},
   { PROTOCOL_BINARY_DCP_CONTROL,                    "DCP Control"              },
   { PROTOCOL_BINARY_DCP_SYSTEM_EVENT,               "DCP System Event"         },
+  { PROTOCOL_BINARY_DCP_PREPARE,                    "DCP Prepare"              },
+  { PROTOCOL_BINARY_DCP_SEQNO_ACK,                  "DCP Seqno Acknowledgement"},
+  { PROTOCOL_BINARY_DCP_COMMIT,                     "DCP Commit"               },
+  { PROTOCOL_BINARY_DCP_ABORT,                      "DCP Abort"                },
   { PROTOCOL_BINARY_CMD_STOP_PERSISTENCE,           "Stop Persistence"         },
   { PROTOCOL_BINARY_CMD_START_PERSISTENCE,          "Start Persistence"        },
   { PROTOCOL_BINARY_CMD_SET_PARAM,                  "Set Parameter"            },
@@ -824,6 +840,23 @@ static const int * subdoc_doc_flags[] = {
   NULL
 };
 
+static const int *set_with_meta_extra_flags[] = {
+        &hf_force_meta,
+        &hf_force_accept,
+        &hf_regenerate_cas,
+        &hf_skip_conflict,
+        NULL
+};
+
+static const int *del_with_meta_extra_flags[] = {
+        &hf_force_meta,
+        &hf_force_accept,
+        &hf_regenerate_cas,
+        &hf_skip_conflict,
+        &hf_is_expiration,
+        NULL
+};
+
 static const value_string feature_vals[] = {
   {0x01, "Datatype (deprecated)"},
   {0x02, "TLS"},
@@ -833,13 +866,16 @@ static const value_string feature_vals[] = {
   {0x06, "XATTR"},
   {0x07, "Error Map"},
   {0x08, "Select Bucket"},
-  {0x09, "Collections"},
+  {0x09, "Collections (deprecated)"},
   {0x0a, "Snappy"},
   {0x0b, "JSON"},
   {0x0c, "Duplex"},
   {0x0d, "Clustermap Change Notification"},
   {0x0e, "Unordered Execution"},
   {0x0f, "Tracing"},
+  {0x10, "AltRequestSupport"},
+  {0x11, "SyncReplication"},
+  {0x12, "Collections"},
   {0, NULL}
 };
 
@@ -1377,6 +1413,87 @@ dissect_extras(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
     }
     break;
   }
+  case PROTOCOL_BINARY_DCP_PREPARE: {
+    if (extlen) {
+      if (request) {
+        static const int * extra_flags[] = {
+          NULL
+        };
+        proto_tree_add_item(extras_tree, hf_extras_by_seqno, tvb, offset, 8, ENC_BIG_ENDIAN);
+        offset += 8;
+        proto_tree_add_item(extras_tree, hf_extras_rev_seqno, tvb, offset, 8, ENC_BIG_ENDIAN);
+        offset += 8;
+        proto_tree_add_bitmask(extras_tree, tvb, offset, hf_extras_flags, ett_extras_flags, extra_flags, ENC_BIG_ENDIAN);
+        offset += 4;
+        proto_tree_add_item(extras_tree, hf_extras_expiration, tvb, offset, 4, ENC_BIG_ENDIAN);
+        offset += 4;
+        proto_tree_add_item(extras_tree, hf_extras_lock_time, tvb, offset, 4, ENC_BIG_ENDIAN);
+        offset += 4;
+        proto_tree_add_item(extras_tree, hf_extras_nru, tvb, offset, 1, ENC_BIG_ENDIAN);
+        offset += 1;
+        proto_tree_add_item(extras_tree, hf_extras_deleted, tvb, offset, 1, ENC_BIG_ENDIAN);
+        offset += 1;
+        proto_tree_add_item(extras_tree, hf_flex_frame_durability_timeout, tvb, offset, 2, ENC_BIG_ENDIAN);
+        offset += 2;
+        proto_tree_add_item(extras_tree, hf_flex_frame_durability_req, tvb, offset, 1, ENC_BIG_ENDIAN);
+        offset += 1;
+      } else {
+        illegal = TRUE;
+      }
+    } else if (request) {
+      /* Request must have extras */
+      missing = TRUE;
+    }
+    break;
+  }
+  case PROTOCOL_BINARY_DCP_SEQNO_ACK: {
+    if (extlen) {
+      if (request) {
+        proto_tree_add_item(extras_tree, hf_extras_by_seqno_mem, tvb, offset, 8, ENC_BIG_ENDIAN);
+        offset += 8;
+        proto_tree_add_item(extras_tree, hf_extras_by_seqno_disk, tvb, offset, 8, ENC_BIG_ENDIAN);
+        offset += 8;
+      } else {
+        illegal = TRUE;
+      }
+    } else if (request) {
+      /* Request must have extras */
+      missing = TRUE;
+    }
+    break;
+  }
+  case PROTOCOL_BINARY_DCP_COMMIT: {
+    if (extlen) {
+      if (request) {
+        proto_tree_add_item(extras_tree, hf_extras_prepared_seqno, tvb, offset, 8, ENC_BIG_ENDIAN);
+        offset += 8;
+        proto_tree_add_item(extras_tree, hf_extras_commit_seqno, tvb, offset, 8, ENC_BIG_ENDIAN);
+        offset += 8;
+      } else {
+        illegal = TRUE;
+      }
+    } else if (request) {
+      /* Request must have extras */
+      missing = TRUE;
+    }
+    break;
+  }
+  case PROTOCOL_BINARY_DCP_ABORT: {
+    if (extlen) {
+      if (request) {
+        proto_tree_add_item(extras_tree, hf_extras_prepared_seqno, tvb, offset, 8, ENC_BIG_ENDIAN);
+        offset += 8;
+        proto_tree_add_item(extras_tree, hf_extras_abort_seqno, tvb, offset, 8, ENC_BIG_ENDIAN);
+        offset += 8;
+      } else {
+        illegal = TRUE;
+      }
+    } else if (request) {
+      /* Request must have extras */
+      missing = TRUE;
+    }
+    break;
+  }
   case PROTOCOL_BINARY_CMD_SUBDOC_GET:
   case PROTOCOL_BINARY_CMD_SUBDOC_EXISTS:
     dissect_subdoc_spath_required_extras(tvb, extras_tree, extlen, request,
@@ -1470,15 +1587,16 @@ dissect_extras(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
 
       // Options field (4 bytes)
       if (extlen == 28 || extlen == 30) {
-        static const int *extra_flags[] = {
-          &hf_skip_conflict,
-          &hf_force_accept,
-          &hf_regenerate_cas,
-          NULL
-        };
-        proto_tree_add_bitmask(extras_tree, tvb, offset, hf_meta_options,
-                               ett_extras_flags, extra_flags, ENC_BIG_ENDIAN);
-        offset += 4;
+          proto_tree_add_bitmask(
+                  extras_tree,
+                  tvb,
+                  offset,
+                  hf_meta_options,
+                  ett_extras_flags,
+                  (opcode == PROTOCOL_BINARY_CMD_DEL_WITH_META) ?
+                      del_with_meta_extra_flags : set_with_meta_extra_flags,
+                  ENC_BIG_ENDIAN);
+          offset += 4;
       }
       // Meta Length field (2 bytes)
       if (extlen == 26 || extlen == 30) {
@@ -1553,16 +1671,16 @@ dissect_unsigned_leb128(tvbuff_t *tvb, gint start, gint end, guint32* value) {
 
     if ((byte & 0x80) == 0x80) {
         guint32 shift = 7;
-        gint index;
-        for (index = start+1; index < end; index++) {
-            byte = tvb_get_guint8(tvb, index);
+        gint byte_idx;
+        for (byte_idx = start+1; byte_idx < end; byte_idx++) {
+            byte = tvb_get_guint8(tvb, byte_idx);
             *value |= (byte & 0x7f) << shift;
             if ((byte & 0x80) == 0) {
                 break;
             }
             shift += 7;
         }
-        return (index == end) ? -1 : index + 1;
+        return (byte_idx == end) ? -1 : byte_idx + 1;
     }
     return start + 1;
 }
@@ -2385,14 +2503,14 @@ static void dissect_flexible_framing_extras(tvbuff_t* tvb,
     bytes_remaining = bytes_remaining - 1 - (len_size - 1) - (id_size - 1);;
 
     /* lookup a dissector function by id */
-    int index = 0, found = 0;
-    while (id_dissectors[index].handler) {
-      if (id_dissectors[index].id == id) {
-        id_dissectors[index].handler(tvb, frame_tree, offset, len);
+    int id_index = 0, found = 0;
+    while (id_dissectors[id_index].handler) {
+      if (id_dissectors[id_index].id == id) {
+        id_dissectors[id_index].handler(tvb, frame_tree, offset, len);
         found = 1;
         break;
       }
-      index++;
+      id_index++;
     }
 
     if (!found)  {
@@ -2714,10 +2832,16 @@ proto_register_couchbase(void)
     { &hf_extras_snap_start_seqno, { "Snapshot Start Sequence Number", "couchbase.extras.snap_start_seqno", FT_UINT64, BASE_HEX, NULL, 0x0, NULL, HFILL } },
     { &hf_extras_snap_end_seqno, { "Snapshot End Sequence Number", "couchbase.extras.snap_start_seqno", FT_UINT64, BASE_HEX, NULL, 0x0, NULL, HFILL } },
     { &hf_extras_by_seqno, { "by_seqno", "couchbase.extras.by_seqno", FT_UINT64, BASE_HEX, NULL, 0x0, NULL, HFILL } },
+    { &hf_extras_by_seqno_mem, { "by_seqno (memory)", "couchbase.extras.by_seqno_mem", FT_UINT64, BASE_HEX, NULL, 0x0, NULL, HFILL } },
+    { &hf_extras_by_seqno_disk, { "by_seqno (disk)", "couchbase.extras.by_seqno_disk", FT_UINT64, BASE_HEX, NULL, 0x0, NULL, HFILL } },
+    { &hf_extras_prepared_seqno, { "by_seqno (prepared)", "couchbase.extras.by_seqno_prepared", FT_UINT64, BASE_HEX, NULL, 0x0, NULL, HFILL } },
+    { &hf_extras_commit_seqno, { "by_seqno (commit)", "couchbase.extras.by_seqno_commit", FT_UINT64, BASE_HEX, NULL, 0x0, NULL, HFILL } },
+    { &hf_extras_abort_seqno, { "by_seqno (abort)", "couchbase.extras.by_seqno_abort", FT_UINT64, BASE_HEX, NULL, 0x0, NULL, HFILL } },
     { &hf_extras_rev_seqno, { "rev_seqno", "couchbase.extras.rev_seqno", FT_UINT64, BASE_HEX, NULL, 0x0, NULL, HFILL } },
     { &hf_extras_lock_time, { "lock_time", "couchbase.extras.lock_time", FT_UINT32, BASE_DEC, NULL, 0x0, NULL, HFILL } },
     { &hf_extras_nmeta, { "nmeta", "couchbase.extras.nmeta", FT_UINT32, BASE_HEX, NULL, 0x0, NULL, HFILL } },
     { &hf_extras_nru, { "nru", "couchbase.extras.nru", FT_UINT16, BASE_HEX, NULL, 0x0, NULL, HFILL } },
+    { &hf_extras_deleted, { "deleted", "couchbase.extras.deleted", FT_UINT8, BASE_DEC, NULL, 0x0, NULL, HFILL } },
     { &hf_extras_bytes_to_ack, { "bytes_to_ack", "couchbase.extras.bytes_to_ack", FT_UINT32, BASE_DEC, NULL, 0x0, NULL, HFILL } },
     { &hf_extras_delete_time, { "delete_time", "couchbase.extras.delete_time", FT_UINT32, BASE_DEC, NULL, 0x0, NULL, HFILL } },
     { &hf_extras_delete_unused, { "unused", "couchbase.extras.delete_unused", FT_UINT8, BASE_DEC, NULL, 0x0, NULL, HFILL } },
@@ -2770,9 +2894,11 @@ proto_register_couchbase(void)
     { &hf_meta_revseqno, {"RevSeqno", "couchbase.extras.revseqno", FT_UINT64, BASE_HEX, NULL, 0x0, NULL, HFILL} },
     { &hf_meta_cas, {"CAS", "couchbase.extras.cas", FT_UINT64, BASE_HEX, NULL, 0x0, NULL, HFILL} },
     { &hf_meta_options, {"Options", "couchbase.extras.options", FT_UINT32, BASE_HEX, NULL, 0x0, NULL, HFILL} },
-    { &hf_skip_conflict, {"SKIP_CONFLICT_RESOLUTION", "couchbase.extras.options.skip_conflict_resolution", FT_BOOLEAN, 16, TFS(&tfs_set_notset), 0x01, NULL, HFILL} },
+    { &hf_force_meta, {"FORCE_WITH_META_OP", "couchbase.extras.options.force_with_meta_op", FT_BOOLEAN, 16, TFS(&tfs_set_notset), 0x01, NULL, HFILL} },
     { &hf_force_accept, {"FORCE_ACCEPT_WITH_META_OPS", "couchbase.extras.options.force_accept_with_meta_ops", FT_BOOLEAN, 16, TFS(&tfs_set_notset), 0x02, NULL, HFILL} },
     { &hf_regenerate_cas, {"REGENERATE_CAS", "couchbase.extras.option.regenerate_cas", FT_BOOLEAN, 16, TFS(&tfs_set_notset), 0x04, NULL, HFILL} },
+    { &hf_skip_conflict, {"SKIP_CONFLICT_RESOLUTION", "couchbase.extras.options.skip_conflict_resolution", FT_BOOLEAN, 16, TFS(&tfs_set_notset), 0x08, NULL, HFILL} },
+    { &hf_is_expiration, {"IS_EXPIRATION", "couchbase.extras.options.is_expiration", FT_BOOLEAN, 16, TFS(&tfs_set_notset), 0x10, NULL, HFILL} },
     { &hf_metalen, {"Meta Length", "couchbase.extras.meta_length", FT_UINT16, BASE_HEX, NULL, 0x0, NULL, HFILL} },
     { &hf_meta_reqextmeta, {"ReqExtMeta", "couchbase.extras.reqextmeta", FT_UINT8, BASE_HEX, NULL, 0x0, NULL, HFILL} },
     { &hf_meta_deleted, {"Deleted", "couchbase.extras.deleted", FT_UINT32, BASE_HEX, NULL, 0x0, NULL, HFILL} },

@@ -30,11 +30,11 @@
  * - No text appears between the offset and the bytes (any bytes appearing after
  *   such text would be ignored)
  *
- * - The offset must be arithmetically correct, i.e. if the offset is 00000020, then
- *   exactly 32 bytes must have been read into this packet before this. If the offset
- *   is wrong, the packet is immediately terminated
+ * - The offset must be arithmetically correct, i.e. if the offset is 00000020,
+ *   then exactly 32 bytes must have been read into this packet before this.
+ *   If the offset is wrong, the packet is immediately terminated
  *
- * A packet start is signalled by a zero offset.
+ * A packet start is signaled by a zero offset.
  *
  * Lines starting with #TEXT2PCAP are directives. These allow the user
  * to embed instructions into the capture file which allows text2pcap
@@ -48,7 +48,7 @@
  *
  * The output is a libpcap packet containing Ethernet frames by
  * default. This program takes options which allow the user to add
- * dummy Ethernet, IP and UDP or TCP headers to the packets in order
+ * dummy Ethernet, IP and UDP, TCP or SCTP headers to the packets in order
  * to allow dumps of L3 or higher protocols to be decoded.
  *
  * Considerable flexibility is built into this code to read hexdumps
@@ -122,29 +122,29 @@
 static int debug = 0;
 
 /* Dummy Ethernet header */
-static int hdr_ethernet = FALSE;
+static gboolean hdr_ethernet = FALSE;
 static guint32 hdr_ethernet_proto = 0;
 
 /* Dummy IP header */
-static int hdr_ip = FALSE;
+static gboolean hdr_ip = FALSE;
 static guint hdr_ip_proto = 0;
 
 /* Dummy UDP header */
-static int hdr_udp = FALSE;
+static gboolean hdr_udp = FALSE;
 static guint32 hdr_dest_port = 0;
 static guint32 hdr_src_port = 0;
 
 /* Dummy TCP header */
-static int hdr_tcp = FALSE;
+static gboolean hdr_tcp = FALSE;
 
 /* Dummy SCTP header */
-static int hdr_sctp = FALSE;
+static gboolean hdr_sctp = FALSE;
 static guint32 hdr_sctp_src  = 0;
 static guint32 hdr_sctp_dest = 0;
 static guint32 hdr_sctp_tag  = 0;
 
 /* Dummy DATA chunk header */
-static int hdr_data_chunk = FALSE;
+static gboolean hdr_data_chunk = FALSE;
 static guint8  hdr_data_chunk_type = 0;
 static guint8  hdr_data_chunk_bits = 3;
 static guint32 hdr_data_chunk_tsn  = 0;
@@ -153,7 +153,7 @@ static guint16 hdr_data_chunk_ssn  = 0;
 static guint32 hdr_data_chunk_ppid = 0;
 
 /* Dummy ExportPdu header */
-static int hdr_export_pdu = FALSE;
+static gboolean hdr_export_pdu = FALSE;
 static gchar* hdr_export_pdu_payload = NULL;
 
 static gboolean has_direction = FALSE;
@@ -353,7 +353,7 @@ unwrite_bytes (guint32 nbytes)
 }
 
 /*----------------------------------------------------------------------
- * Determin SCTP chunk padding length
+ * Determine SCTP chunk padding length
  */
 static guint32
 number_of_padding_bytes (guint32 length)
@@ -651,7 +651,7 @@ parse_preamble (void)
     }
 
     /*
-     * If no "-t" flag was specified, don't attempt to parse a packet
+     * If no "-t" flag was specified, don't attempt to parse the packet
      * preamble to extract a time stamp.
      */
     if (ts_fmt == NULL)
@@ -1072,14 +1072,14 @@ text_import(text_import_info_t *info)
 }
 
 /*
- * Editor modelines
+ * Editor modelines  -  https://www.wireshark.org/tools/modelines.html
  *
- * Local Variables:
+ * Local variables:
  * c-basic-offset: 4
  * tab-width: 8
  * indent-tabs-mode: nil
  * End:
  *
- * ex: set shiftwidth=4 tabstop=8 expandtab:
+ * vi: set shiftwidth=4 tabstop=8 expandtab:
  * :indentSize=4:tabSize=8:noTabs=true:
  */

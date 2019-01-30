@@ -15,12 +15,34 @@ if (HAVE_HFI_SECTION_INIT)
 	)
 endif()
 
+include_directories(
+		${GLIB2_INCLUDE_DIRS}
+		${CARES_INCLUDE_DIRS}
+		${GCRYPT_INCLUDE_DIRS}
+		${GTHREAD2_INCLUDE_DIRS}
+		${GNUTLS_INCLUDE_DIRS}
+		${KERBEROS_INCLUDE_DIRS}
+		${LUA_INCLUDE_DIRS}
+		${LZ4_INCLUDE_DIRS}
+		${NGHTTP2_INCLUDE_DIRS}
+		${PCAP_INCLUDE_DIRS}
+		${SMI_INCLUDE_DIRS}
+		${SNAPPY_INCLUDE_DIRS}
+		${ZLIB_INCLUDE_DIRS}
+		${LIBXML2_INCLUDE_DIR}
+)
+
+add_definitions(
+		${LIBXML2_DEFINITIONS}
+		${KERBEROS_DEFINITIONS}
+)
+
 add_subdirectory(crypt)
 add_subdirectory(dfilter)
 add_subdirectory(dissectors)
 add_subdirectory(ftypes)
 add_subdirectory(wmem)
-if (HAVE_LIBLUA)
+if(LUA_FOUND)
 	add_subdirectory(wslua)
 endif()
 
@@ -248,7 +270,6 @@ set(LIBWIRESHARK_NONGENERATED_FILES
 	unit_strings.c
 	xdlc.c
 	${CMAKE_CURRENT_BINARY_DIR}/ps.c
-	${CMAKE_SOURCE_DIR}/version_info.c
 )
 
 set(LIBWIRESHARK_FILES ${LIBWIRESHARK_NONGENERATED_FILES})
@@ -278,12 +299,11 @@ add_library(epan
 	$<TARGET_OBJECTS:dissectors>
 	$<TARGET_OBJECTS:dissectors-corba>
 	$<TARGET_OBJECTS:ftypes>
+	$<TARGET_OBJECTS:version_info>
 	$<TARGET_OBJECTS:wmem>
-	$<$<BOOL:${HAVE_LIBLUA}>:$<TARGET_OBJECTS:wslua>>
+	$<$<BOOL:${LUA_FOUND}>:$<TARGET_OBJECTS:wslua>>
 	${CMAKE_BINARY_DIR}/image/libwireshark.rc
 )
-
-add_dependencies(epan version)
 
 if(ENABLE_PLUGINS)
 	target_compile_definitions(epan PUBLIC HAVE_PLUGINS)
@@ -293,20 +313,8 @@ set_target_properties(epan PROPERTIES
 	COMPILE_DEFINITIONS "WS_BUILD_DLL"
 	LINK_FLAGS "${WS_LINK_FLAGS}"
 	VERSION "0.0.0" SOVERSION 0
+	INSTALL_RPATH "${LIBRARY_INSTALL_RPATH}"
 )
-
-if(ENABLE_APPLICATION_BUNDLE)
-	if(NOT CMAKE_CFG_INTDIR STREQUAL ".")
-		# Xcode
-		set_target_properties(epan PROPERTIES
-			LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/run/$<CONFIG>/Wireshark.app/Contents/Frameworks
-		)
-	else()
-		set_target_properties(epan PROPERTIES
-			LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/run/Wireshark.app/Contents/Frameworks
-		)
-	endif()
-endif()
 
 ABICHECK(libwireshark)
 
@@ -385,9 +393,9 @@ target_include_directories(epan
 	INTERFACE
 	$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}>
 	$<INSTALL_INTERFACE:include/wireshark>
-	PUBLIC
-	${GLIB2_INCLUDE_DIRS}
 )
+
+target_include_directories(epan SYSTEM PUBLIC ${GLIB2_INCLUDE_DIRS})
 
 add_dependencies(epan lemon)
 

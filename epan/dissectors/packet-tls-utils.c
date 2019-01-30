@@ -1359,23 +1359,24 @@ const value_string compress_certificate_algorithm_vals[] = {
 
 
 const value_string quic_transport_parameter_id[] = {
-    { SSL_HND_QUIC_TP_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL, "initial_max_stream_data_bidi_local" },
-    { SSL_HND_QUIC_TP_INITIAL_MAX_DATA, "initial_max_data" },
-    { SSL_HND_QUIC_TP_INITIAL_MAX_BIDI_STREAMS, "initial_max_bidi_streams" },
+    { SSL_HND_QUIC_TP_ORIGINAL_CONNECTION_ID, "original_connection_id" },
     { SSL_HND_QUIC_TP_IDLE_TIMEOUT, "idle_timeout" },
-    { SSL_HND_QUIC_TP_PREFERRED_ADDRESS, "preferred_address" },
-    { SSL_HND_QUIC_TP_MAX_PACKET_SIZE, "max_packet_size" },
     { SSL_HND_QUIC_TP_STATELESS_RESET_TOKEN, "stateless_reset_token" },
-    { SSL_HND_QUIC_TP_ACK_DELAY_EXPONENT, "ack_delay_exponent" },
-    { SSL_HND_QUIC_TP_INITIAL_MAX_UNI_STREAMS, "initial_max_uni_streams" },
-    { SSL_HND_QUIC_TP_DISABLE_MIGRATION, "disable_migration" },
+    { SSL_HND_QUIC_TP_MAX_PACKET_SIZE, "max_packet_size" },
+    { SSL_HND_QUIC_TP_INITIAL_MAX_DATA, "initial_max_data" },
+    { SSL_HND_QUIC_TP_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL, "initial_max_stream_data_bidi_local" },
     { SSL_HND_QUIC_TP_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE, "initial_max_stream_data_bidi_remote" },
     { SSL_HND_QUIC_TP_INITIAL_MAX_STREAM_DATA_UNI, "initial_max_stream_data_uni" },
+    { SSL_HND_QUIC_TP_INITIAL_MAX_STREAMS_UNI, "initial_max_streams_uni" },
+    { SSL_HND_QUIC_TP_INITIAL_MAX_STREAMS_BIDI, "initial_max_streams_bidi" },
+    { SSL_HND_QUIC_TP_ACK_DELAY_EXPONENT, "ack_delay_exponent" },
     { SSL_HND_QUIC_TP_MAX_ACK_DELAY, "max_ack_delay" },
-    { SSL_HND_QUIC_TP_ORIGINAL_CONNECTION_ID, "original_connection_id" },
+    { SSL_HND_QUIC_TP_DISABLE_MIGRATION, "disable_migration" },
+    { SSL_HND_QUIC_TP_PREFERRED_ADDRESS, "preferred_address" },
     { 0, NULL }
 };
 
+// Removed in QUIC draft -18
 const value_string quic_tp_preferred_address_vals[] = {
     { 4, "IPv4" },
     { 6, "IPv6" },
@@ -3627,7 +3628,8 @@ ssl_decrypt_pre_master_secret(SslDecryptSession *ssl_session,
         // Try to decrypt using the RSA keys table from (D)TLS preferences.
         ret = gnutls_privkey_decrypt_data(pk, 0, &epms, &pms);
     } else {
-        ret = GNUTLS_E_NO_CERTIFICATE_FOUND;
+        // Try to decrypt using a hardware token.
+        ret = secrets_rsa_decrypt(ssl_session->cert_key_id, epms.data, epms.size, &pms.data, &pms.size);
     }
     if (ret < 0) {
         ssl_debug_printf("%s: decryption failed: %d (%s)\n", G_STRFUNC, ret, gnutls_strerror(ret));
@@ -3637,13 +3639,21 @@ ssl_decrypt_pre_master_secret(SslDecryptSession *ssl_session,
     if (pms.size != 48) {
         ssl_debug_printf("%s wrong pre_master_secret length (%d, expected %d)\n",
                          G_STRFUNC, pms.size, 48);
-        gnutls_free(pms.data);
+        if (pk) {
+            gnutls_free(pms.data);
+        } else {
+            g_free(pms.data);
+        }
         return FALSE;
     }
 
     ssl_session->pre_master_secret.data = (guint8 *)wmem_memdup(wmem_file_scope(), pms.data, 48);
     ssl_session->pre_master_secret.data_len = 48;
-    gnutls_free(pms.data);
+    if (pk) {
+        gnutls_free(pms.data);
+    } else {
+        g_free(pms.data);
+    }
     ssl_print_string("pre master secret", &ssl_session->pre_master_secret);
 
     /* Remove the master secret if it was there.
@@ -6592,23 +6602,23 @@ ssl_dissect_hnd_hello_ext_quic_transport_parameters(ssl_common_dissect_t *hf, tv
 {
     guint32 quic_length, parameter_length, supported_versions_length, next_offset;
 
-    /* https://tools.ietf.org/html/draft-ietf-quic-transport-14#section-6.6
+    /* https://tools.ietf.org/html/draft-ietf-quic-transport-17#section-18
     *  uint32 QuicVersion;
      *  enum {
-     *     initial_max_stream_data_bidi_local(0),
-     *     initial_max_data(1),
-     *     initial_max_bidi_streams(2),
-     *     idle_timeout(3),
-     *     preferred_address(4),
-     *     max_packet_size(5),
-     *     stateless_reset_token(6),
-     *     ack_delay_exponent(7),
-     *     initial_max_uni_streams(8),
-     *     disable_migration(9),
-     *     initial_max_stream_data_bidi_remote(10),
-     *     initial_max_stream_data_uni(11),
-     *     max_ack_delay(12),
-     *     original_connection_id(13),
+     *     original_connection_id(0),
+     *     idle_timeout(1),
+     *     stateless_reset_token(2),
+     *     max_packet_size(3),
+     *     initial_max_data(4),
+     *     initial_max_stream_data_bidi_local(5),
+     *     initial_max_stream_data_bidi_remote(6),
+     *     initial_max_stream_data_uni(7),
+     *     initial_max_streams_bidi(8),
+     *     initial_max_streams_uni(9),
+     *     ack_delay_exponent(10),
+     *     max_ack_delay(11),
+     *     disable_migration(12),
+     *     preferred_address(13),
      *     (65535)
      *  } TransportParameterId;
      *
@@ -6626,13 +6636,24 @@ ssl_dissect_hnd_hello_ext_quic_transport_parameters(ssl_common_dissect_t *hf, tv
      *              QuicVersion negotiated_version;
      *              QuicVersion supported_versions<4..2^8-4>;
      *      };
-     *      TransportParameter parameters<22..2^16-1>;
+     *      TransportParameter parameters<0..2^16-1>;
      *  } TransportParameters;
      *
+     *  // draft -17 and before
      *  struct {
      *    enum { IPv4(4), IPv6(6), (15) } ipVersion;
      *    opaque ipAddress<4..2^8-1>;
      *    uint16 port;
+     *    opaque connectionId<0..18>;
+     *    opaque statelessResetToken[16];
+     *  } PreferredAddress;
+     *
+     *  // Since draft -18
+     *  struct {
+     *    opaque ipv4Address[4];
+     *    uint16 ipv4Port;
+     *    opaque ipv6Address[16];
+     *    uint16 ipv6Port;
      *    opaque connectionId<0..18>;
      *    opaque statelessResetToken[16];
      *  } PreferredAddress;
@@ -6679,6 +6700,8 @@ ssl_dissect_hnd_hello_ext_quic_transport_parameters(ssl_common_dissect_t *hf, tv
         guint32 parameter_type;
         proto_tree *parameter_tree;
         guint32 parameter_end_offset;
+        guint64 value;
+        guint32 len = 0;
 
         parameter_tree = proto_tree_add_subtree(tree, tvb, offset, 4, hf->ett.hs_ext_quictp_parameter,
                                                 NULL, "Parameter");
@@ -6702,59 +6725,127 @@ ssl_dissect_hnd_hello_ext_quic_transport_parameters(ssl_common_dissect_t *hf, tv
                             tvb, offset, parameter_length, ENC_NA);
 
         switch (parameter_type) {
-            case SSL_HND_QUIC_TP_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL:
-                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_initial_max_stream_data_bidi_local,
-                                    tvb, offset, 4, ENC_BIG_ENDIAN);
-                proto_item_append_text(parameter_tree, " %u", tvb_get_ntohl(tvb, offset));
-                offset += 4;
-            break;
-            case SSL_HND_QUIC_TP_INITIAL_MAX_DATA:
-                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_initial_max_data,
-                                    tvb, offset, 4, ENC_BIG_ENDIAN);
-                proto_item_append_text(parameter_tree, " %u", tvb_get_ntohl(tvb, offset));
-                offset += 4;
-            break;
-            case SSL_HND_QUIC_TP_INITIAL_MAX_BIDI_STREAMS:
-                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_initial_max_bidi_streams,
-                                    tvb, offset, 2, ENC_BIG_ENDIAN);
-                proto_item_append_text(parameter_tree, " %u", tvb_get_ntohs(tvb, offset));
-                offset += 2;
+            case SSL_HND_QUIC_TP_ORIGINAL_CONNECTION_ID:
+                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_ocid,
+                                    tvb, offset, parameter_length, ENC_NA);
+                offset += parameter_length;
             break;
             case SSL_HND_QUIC_TP_IDLE_TIMEOUT:
-                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_idle_timeout,
-                                    tvb, offset, 2, ENC_BIG_ENDIAN);
-                proto_item_append_text(parameter_tree, " %u secs", tvb_get_ntohs(tvb, offset));
-                offset += 2;
+                proto_tree_add_item_ret_varint(parameter_tree, hf->hf.hs_ext_quictp_parameter_idle_timeout,
+                                               tvb, offset, -1, ENC_VARINT_QUIC, &value, &len);
+                proto_item_append_text(parameter_tree, " %" G_GINT64_MODIFIER "u secs", value);
+                offset += len;
+            break;
+            case SSL_HND_QUIC_TP_STATELESS_RESET_TOKEN:
+                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_stateless_reset_token,
+                                    tvb, offset, 16, ENC_BIG_ENDIAN);
+                offset += 16;
+            break;
+            case SSL_HND_QUIC_TP_MAX_PACKET_SIZE:
+                proto_tree_add_item_ret_varint(parameter_tree, hf->hf.hs_ext_quictp_parameter_max_packet_size,
+                                               tvb, offset, -1, ENC_VARINT_QUIC, &value, &len);
+                proto_item_append_text(parameter_tree, " %" G_GINT64_MODIFIER "u", value);
+                /*TODO display expert info about invalid value (< 1252 or >65527) ? */
+                offset += len;
+            break;
+            case SSL_HND_QUIC_TP_INITIAL_MAX_DATA:
+                proto_tree_add_item_ret_varint(parameter_tree, hf->hf.hs_ext_quictp_parameter_initial_max_data,
+                                               tvb, offset, -1, ENC_VARINT_QUIC, &value, &len);
+                proto_item_append_text(parameter_tree, " %" G_GINT64_MODIFIER "u", value);
+                offset += len;
+            break;
+            case SSL_HND_QUIC_TP_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL:
+                proto_tree_add_item_ret_varint(parameter_tree, hf->hf.hs_ext_quictp_parameter_initial_max_stream_data_bidi_local,
+                                               tvb, offset, -1, ENC_VARINT_QUIC, &value, &len);
+                proto_item_append_text(parameter_tree, " %" G_GINT64_MODIFIER "u", value);
+                offset += len;
+            break;
+            case SSL_HND_QUIC_TP_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE:
+                proto_tree_add_item_ret_varint(parameter_tree, hf->hf.hs_ext_quictp_parameter_initial_max_stream_data_bidi_remote,
+                                               tvb, offset, -1, ENC_VARINT_QUIC, &value, &len);
+                proto_item_append_text(parameter_tree, " %" G_GINT64_MODIFIER "u", value);
+                offset += len;
+            break;
+            case SSL_HND_QUIC_TP_INITIAL_MAX_STREAM_DATA_UNI:
+                proto_tree_add_item_ret_varint(parameter_tree, hf->hf.hs_ext_quictp_parameter_initial_max_stream_data_uni,
+                                               tvb, offset, -1, ENC_VARINT_QUIC, &value, &len);
+                proto_item_append_text(parameter_tree, " %" G_GINT64_MODIFIER "u", value);
+                offset += len;
+            break;
+            case SSL_HND_QUIC_TP_INITIAL_MAX_STREAMS_UNI:
+                proto_tree_add_item_ret_varint(parameter_tree, hf->hf.hs_ext_quictp_parameter_initial_max_streams_uni,
+                                               tvb, offset, -1, ENC_VARINT_QUIC, &value, &len);
+                proto_item_append_text(parameter_tree, " %" G_GINT64_MODIFIER "u", value);
+                offset += len;
+            break;
+            case SSL_HND_QUIC_TP_INITIAL_MAX_STREAMS_BIDI:
+                proto_tree_add_item_ret_varint(parameter_tree, hf->hf.hs_ext_quictp_parameter_initial_max_streams_bidi,
+                                               tvb, offset, -1, ENC_VARINT_QUIC, &value, &len);
+                proto_item_append_text(parameter_tree, " %" G_GINT64_MODIFIER "u", value);
+                offset += len;
+            break;
+            case SSL_HND_QUIC_TP_ACK_DELAY_EXPONENT:
+                proto_tree_add_item_ret_varint(parameter_tree, hf->hf.hs_ext_quictp_parameter_ack_delay_exponent,
+                                               tvb, offset, -1, ENC_VARINT_QUIC, NULL, &len);
+                /*TODO display multiplier (x8) and expert info about invalid value (> 20) ? */
+                offset += len;
+            break;
+            case SSL_HND_QUIC_TP_MAX_ACK_DELAY:
+                proto_tree_add_item_ret_varint(parameter_tree, hf->hf.hs_ext_quictp_parameter_max_ack_delay,
+                                               tvb, offset, -1, ENC_VARINT_QUIC, &value, &len);
+                proto_item_append_text(parameter_tree, " %" G_GINT64_MODIFIER "u", value);
+                offset += len;
+            break;
+            case SSL_HND_QUIC_TP_DISABLE_MIGRATION:
+                /* No Payload */
             break;
             case SSL_HND_QUIC_TP_PREFERRED_ADDRESS: {
                 guint32 ipversion, ipaddress_length, connectionid_length;
-                proto_tree_add_item_ret_uint(parameter_tree, hf->hf.hs_ext_quictp_parameter_pa_ipversion,
-                                             tvb, offset, 1, ENC_BIG_ENDIAN, &ipversion);
-                offset += 1;
-                if (!ssl_add_vector(hf, tvb, pinfo, tree, offset, offset_end, &ipaddress_length,
-                                    hf->hf.hs_ext_quictp_parameter_pa_ipaddress_length, 4, G_MAXUINT8-1)) {
-                    break;
-                }
-                offset += 1;
-                switch (ipversion){
+                // Heuristically detect draft -17 vs draft -18.
+                ipversion = tvb_get_guint8(tvb, offset);
+                if (ipversion == 4 || ipversion == 6) {
+                    // Draft -17 and earlier.
+                    proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_pa_ipversion,
+                                        tvb, offset, 1, ENC_BIG_ENDIAN);
+                    offset += 1;
+                    if (!ssl_add_vector(hf, tvb, pinfo, tree, offset, offset_end, &ipaddress_length,
+                                        hf->hf.hs_ext_quictp_parameter_pa_ipaddress_length, 4, G_MAXUINT8-1)) {
+                        break;
+                    }
+                    offset += 1;
+                    switch (ipversion) {
                     case 4:
-                        proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_pa_ipaddress_ipv4,
+                        proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_pa_ipv4address,
                                             tvb, offset, 4, ENC_BIG_ENDIAN);
-                    break;
+                        offset += 4;
+                        proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_pa_ipv4port,
+                                            tvb, offset, 2, ENC_BIG_ENDIAN);
+                        offset += 2;
+                        break;
                     case 6:
-                        proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_pa_ipaddress_ipv6,
+                        proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_pa_ipv6address,
                                             tvb, offset, 16, ENC_NA);
-                    break;
-                    default:
-                        proto_tree_add_expert(tree, pinfo, &hf->ei.hs_ext_quictp_parameter_pa_ipaddress,
-                                              tvb, offset, ipaddress_length);
-                    break;
+                        offset += 16;
+                        proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_pa_ipv6port,
+                                            tvb, offset, 2, ENC_BIG_ENDIAN);
+                        offset += 2;
+                        break;
+                    }
+                } else {
+                    // Since draft -18
+                    proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_pa_ipv4address,
+                                        tvb, offset, 4, ENC_BIG_ENDIAN);
+                    offset += 4;
+                    proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_pa_ipv4port,
+                                        tvb, offset, 2, ENC_BIG_ENDIAN);
+                    offset += 2;
+                    proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_pa_ipv6address,
+                                        tvb, offset, 16, ENC_NA);
+                    offset += 16;
+                    proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_pa_ipv6port,
+                                        tvb, offset, 2, ENC_BIG_ENDIAN);
+                    offset += 2;
                 }
-                offset += ipaddress_length;
-
-                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_pa_port,
-                                    tvb, offset, 2, ENC_BIG_ENDIAN);
-                offset += 2;
 
                 if (!ssl_add_vector(hf, tvb, pinfo, tree, offset, offset_end, &connectionid_length,
                                     hf->hf.hs_ext_quictp_parameter_pa_connectionid_length, 0, 18)) {
@@ -6770,56 +6861,6 @@ ssl_dissect_hnd_hello_ext_quic_transport_parameters(ssl_common_dissect_t *hf, tv
                                     tvb, offset, 16, ENC_NA);
                 offset += 16;
             }
-            break;
-            case SSL_HND_QUIC_TP_MAX_PACKET_SIZE:
-                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_max_packet_size,
-                                    tvb, offset, 2, ENC_BIG_ENDIAN);
-                proto_item_append_text(parameter_tree, " %u", tvb_get_ntohs(tvb, offset));
-                /*TODO display expert info about invalid value (< 1252 or >65527) ? */
-                offset += 2;
-            break;
-            case SSL_HND_QUIC_TP_STATELESS_RESET_TOKEN:
-                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_stateless_reset_token,
-                                    tvb, offset, 16, ENC_BIG_ENDIAN);
-                offset += 16;
-            break;
-            case SSL_HND_QUIC_TP_ACK_DELAY_EXPONENT:
-                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_ack_delay_exponent,
-                                    tvb, offset, 1, ENC_BIG_ENDIAN);
-                /*TODO display multiplier (x8) and expert info about invalid value (> 20) ? */
-                offset += 1;
-            break;
-            case SSL_HND_QUIC_TP_INITIAL_MAX_UNI_STREAMS:
-                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_initial_max_uni_streams,
-                                    tvb, offset, 2, ENC_BIG_ENDIAN);
-                proto_item_append_text(parameter_tree, " %u", tvb_get_ntohs(tvb, offset));
-                offset += 2;
-            break;
-            case SSL_HND_QUIC_TP_DISABLE_MIGRATION:
-                /* No Payload */
-            break;
-            case SSL_HND_QUIC_TP_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE:
-                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_initial_max_stream_data_bidi_remote,
-                                    tvb, offset, 4, ENC_BIG_ENDIAN);
-                proto_item_append_text(parameter_tree, " %u", tvb_get_ntohl(tvb, offset));
-                offset += 4;
-            break;
-            case SSL_HND_QUIC_TP_INITIAL_MAX_STREAM_DATA_UNI:
-                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_initial_max_stream_data_uni,
-                                    tvb, offset, 4, ENC_BIG_ENDIAN);
-                proto_item_append_text(parameter_tree, " %u", tvb_get_ntohl(tvb, offset));
-                offset += 4;
-            break;
-            case SSL_HND_QUIC_TP_MAX_ACK_DELAY:
-                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_max_ack_delay,
-                                    tvb, offset, 1, ENC_BIG_ENDIAN);
-                proto_item_append_text(parameter_tree, " %u", tvb_get_guint8(tvb, offset));
-                offset += 1;
-            break;
-            case SSL_HND_QUIC_TP_ORIGINAL_CONNECTION_ID:
-                proto_tree_add_item(parameter_tree, hf->hf.hs_ext_quictp_parameter_ocid,
-                                    tvb, offset, parameter_length, ENC_NA);
-                offset += parameter_length;
             break;
             default:
                 offset += parameter_length;
@@ -8999,11 +9040,19 @@ ssl_common_register_dtls_alpn_dissector_table(const char *name,
 }
 
 void
-ssl_common_register_options(module_t *module, ssl_common_options_t *options)
+ssl_common_register_options(module_t *module, ssl_common_options_t *options, gboolean is_dtls)
 {
         prefs_register_string_preference(module, "psk", "Pre-Shared-Key",
              "Pre-Shared-Key as HEX string. Should be 0 to 16 bytes.",
              &(options->psk));
+
+        if (is_dtls) {
+            prefs_register_obsolete_preference(module, "keylog_file");
+            prefs_register_static_text_preference(module, "keylog_file_removed",
+                    "The (Pre)-Master-Secret log filename preference can be configured in the TLS protocol preferences.",
+                    "Use the TLS protocol preference to configure the keylog file for both DTLS and TLS.");
+            return;
+        }
 
         prefs_register_filename_preference(module, "keylog_file", "(Pre)-Master-Secret log filename",
              "The name of a file which contains a list of \n"

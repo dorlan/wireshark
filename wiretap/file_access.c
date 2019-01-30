@@ -1128,7 +1128,9 @@ fail:
 	return NULL;
 
 success:
-	wth->rec_data = (struct Buffer *)g_malloc(sizeof(struct Buffer));
+	/* wth->rec_data is used for the sequential read and will be freed by
+	 * wtap_sequential_close (which is also called by wtap_close). */
+	wth->rec_data = g_new(struct Buffer, 1);
 	ws_buffer_init(wth->rec_data, 1500);
 
 	if ((wth->file_type_subtype == WTAP_FILE_TYPE_SUBTYPE_PCAP) ||
@@ -1699,7 +1701,15 @@ wtap_register_file_type_subtypes(const struct file_type_subtype_info* fi, const 
 {
 	struct file_type_subtype_info* finfo;
 
-	if (!fi || !fi->name || !fi->short_name || subtype > wtap_num_file_types_subtypes) {
+	/*
+	 * Check for required fields (name and short_name). If an existing file
+	 * type is overridden (as opposed as creating a new registration),
+	 * prevent internal subtypes from being overridden by Lua plugins.
+	 */
+	if (!fi || !fi->name || !fi->short_name ||
+			(subtype != WTAP_FILE_TYPE_SUBTYPE_UNKNOWN &&
+			(subtype <= (int)G_N_ELEMENTS(dump_open_table_base) ||
+			subtype > wtap_num_file_types_subtypes))) {
 		g_error("no file type info or invalid file type to register");
 		return subtype;
 	}
@@ -2335,6 +2345,7 @@ wtap_dump_init_dumper(int file_type_subtype, wtap_compression_type compression_t
 			 *
 			 * We use WTAP_MAX_PACKET_SIZE_STANDARD for everything except
 			 * D-Bus, which has a maximum packet size of 128MB,
+			 * and EBHSCR, which has a maximum packet size of 8MB,
 			 * which is more than we want to put into files
 			 * with other link-layer header types, as that
 			 * might cause some software reading those files
@@ -2343,6 +2354,8 @@ wtap_dump_init_dumper(int file_type_subtype, wtap_compression_type compression_t
 			 */
 			if (params->encap == WTAP_ENCAP_DBUS)
 				snaplen = 128*1024*1024;
+			else if (params->encap == WTAP_ENCAP_EBHSCR)
+				snaplen = 8*1024*1024;
 			else
 				snaplen = WTAP_MAX_PACKET_SIZE_STANDARD;
 		}
@@ -2399,6 +2412,8 @@ wtap_dump_open_tempfile(char **filenamep, const char *pfx,
     const wtap_dump_params *params, int *err)
 {
 	int fd;
+	const char *ext;
+	char sfx[16];
 	char *tmpname;
 	wtap_dumper *wdh;
 	WFILE_T fh;
@@ -2412,8 +2427,16 @@ wtap_dump_open_tempfile(char **filenamep, const char *pfx,
 	if (wdh == NULL)
 		return NULL;
 
+	/* Choose an appropriate suffix for the file */
+	ext = wtap_default_file_extension(file_type_subtype);
+	if (ext == NULL)
+		ext = "tmp";
+	sfx[0] = '.';
+	sfx[1] = '\0';
+	g_strlcat(sfx, ext, 16);
+
 	/* Choose a random name for the file */
-	fd = create_tempfile(&tmpname, pfx, ".pcapng");
+	fd = create_tempfile(&tmpname, pfx, sfx);
 	if (fd == -1) {
 		*err = errno;
 		g_free(wdh);

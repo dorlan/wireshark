@@ -29,12 +29,24 @@ The following bugs have been fixed:
 //* cveidlink:2014-2486[]
 //* Wireshark slowly leaked water under the kitchen sink over the course of several months, causing a big mess.
 
+* Data following a TCP ZeroWindowProbe is marked as retransmission and not passed to subdissectors (wsbuglink:15427[])
+
 //_Non-empty section placeholder._
+
+Text and Image columns were handled incorrectly for TDS 7.0 and 7.1. (wsbuglink:3098[])
 
 Dumpcap might not quit if Wireshark or TShark crashes.
 (wsbuglink:1419[])
 
 === New and Updated Features
+
+The following features are new (or have been significantly updated)
+since version 2.9.0:
+
+* Wireshark now supports the Swedish and Ukrainian language.
+* Initial support for using PKCS #11 tokens for RSA decryption in TLS. This can
+  be configured at _Preferences_, _RSA Keys_.
+* The build system now produces reproducible builds (wsbuglink:15163[]).
 
 The following features are new (or have been significantly updated)
 since version 2.6.0:
@@ -60,61 +72,88 @@ since version 2.6.0:
 * APT-X has been renamed to aptX.
 * When importing from hex dump, it's now possible to add an ExportPDU header with a payload name. This
   calls the specific dissector directly without lower protocols.
-* sshdump and ciscodump can now use a proxy for the ssh connection.
+* The sshdump and ciscodump extcap interfaces can now use a proxy for the SSH connection.
 * Dumpcap now supports the `-a packets:NUM` and `-b packets:NUM` options.
 * Wireshark now includes a “No Reassembly” configuration profile.
-* Add Russian translation
+* Wireshark now supports the Russian language.
+* The build system now supports AppImage packages.
+* The Windows installers now ship with Qt 5.12.0. Previously they
+  shipped with Qt 5.9.7.
+* Support for DTLS and TLS decryption using pcapng files that embed a Decryption
+  Secrets Block (DSB) containing a TLS Key Log (wsbuglink:15252[]).
+* The editcap utility gained a new `--inject-secrets` option to inject an
+  existing TLS Key Log file into a pcapng file.
+* A new dfilter function string() has been added. It allows the conversion of
+  non-string fields to strings so string functions (as contains and matches)
+  can be used on them.
+* The Bash test suite has been replaced by one based on Python unittest/pytest.
+* The custom window title can now show file path of the capture file and it has a conditional separator.
 
 === Removed Features and Support
 
 * The legacy (GTK+) user interface has been removed and is no longer supported.
+* The portaudio library is no longer needed due to the removal of GTK+.
 * Wireshark requires Qt 5.2 or later. Qt 4 is no longer supported.
 * Wireshark requires GLib 2.32 or later.
+* Wireshark requires GnuTLS 3.2 or later as optional dependency.
+* Building Wireshark requires Python 3.4 or newer, Python 2.7 is unsupported.
 * Building Wireshark requires CMake. Autotools is no longer supported.
-* The tshark -z compare option was removed.
+* TShark’s `-z compare` option was removed.
+* Building with Cygwin is no longer supported on Windows.
 
 //=== Removed Dissectors
 
-//=== New File Format Decoding Support
+=== New File Format Decoding Support
+
+[commaize]
+--
+Ruby Marshal format
+--
 
 === New Protocol Support
 
 // Add one protocol per line between the -- delimiters.
 [commaize]
 --
-BLIP protocol for Couchbase Lite
+Apple Wireless Direct Link (AWDL)
+Basic Transport Protocol (BTP)
+BLIP Couchbase Mobile (BLIP)
 CDMA 2000
-Apple Wireless Direct Link (AWDL) protocol
+Circuit Emulation Service over Ethernet (CESoETH)
 Cisco Meraki Discovery Protocol (MDP)
-DoIP (ISO 13400-2 Diagnostic communication over Internet Protocol)
-DXL protocol
-E1AP (5G) protocol
+Distributed Ruby (DRb)
+DXL
+E1AP (5G)
 EVS (3GPP TS 26.445 A.2 EVS RTP)
 Exablaze trailers
-GCSNA General Circuit Services Notification Application Protocol
+Great Britain Companion Specification (GBCS) used in the Smart Metering Equipment Technical Specifications (SMETS)
+General Circuit Services Notification Application Protocol (GCSNA)
+GeoNetworking (GeoNw)
 GLOW Lawo Emberplus Data format
-GSM-R protocol (User-to-User Information Element usage)
-GSUP (Osmocom Generic Subscriber Update Protocol)
+GSM-R (User-to-User Information Element usage)
 HI3CCLinkData
-Local Number Portability Database Query Protocol(ANSI)
-MsgPack protocol
-NGAP (5G) protocol
-NR (5G) PDCP protocol
+Intelligent Transport Systems (ITS) application level
+ISO 13400-2 Diagnostic communication over Internet Protocol (DoIP)
+ITU-t X.696 Octet Encoding Rules (OER)
+Local Number Portability Database Query Protocol (ANSI)
+MsgPack
+NGAP (5G)
+NR (5G) PDCP
+Osmocom Generic Subscriber Update Protocol (GSUP)
 PKCS#10 (RFC2986 Certification Request Syntax)
-PROXY (v2) protocol
-Ruby Distributed protocol
-Ruby Marshal format
+PROXY (v2)
 S101 Lawo Emberplus transport frame
-Secure Reliable Transport protocol
-STCSIG (Spirent Test Center Signature decoding for Ethernet and FibreChannel, disabled by default)
+Secure Reliable Transport Protocol (SRT)
+Spirent Test Center Signature decoding for Ethernet and FibreChannel (STCSIG, disabled by default)
+Sybase-specific portions of TDS
 systemd Journal Export
 TeamSpeak 3 DNS
-TDS (Sybase-specific portions of the protocol)
-TPM 2.0 protocol
+TPM 2.0
 Ubiquiti Discovery Protocol (UBDP)
-XnAP (5G) protocol
-ITU-t X.696 Octet Encoding Rules (OER)
-WireGuard protocol
+WireGuard
+XnAP (5G)
+Z39.50 Information Retrieval Protocol
+PCOM protocol
 --
 
 === Updated Protocol Support
@@ -146,6 +185,9 @@ sdjournal, an extcap that captures systemd journal entries.
 
 * Lua: the various logging functions (debug, info, message, warn and critical)
   have been removed. Use the print function instead for debugging purposes.
+* Lua: on Windows, file-related functions such as dofile now assume UTF-8 paths
+  instead of the local code page. This is consistent with Linux and macOS and
+  improves compatibility on non-English systems. (wsbuglink:15118[])
 
 == Getting Wireshark
 

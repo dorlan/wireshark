@@ -190,10 +190,10 @@ QString CaptureFilePropertiesDialog::summaryToHtml()
     if (summary.file_encap_type == WTAP_ENCAP_PER_PACKET) {
         for (guint i = 0; i < summary.packet_encap_types->len; i++)
         {
-            encaps_str = QString(wtap_encap_string(g_array_index(summary.packet_encap_types, int, i)));
+            encaps_str = QString(wtap_encap_description(g_array_index(summary.packet_encap_types, int, i)));
         }
     } else {
-        encaps_str = QString(wtap_encap_string(summary.file_encap_type));
+        encaps_str = QString(wtap_encap_description(summary.file_encap_type));
     }
     out << table_row_begin
         << table_vheader_tmpl.arg(tr("Encapsulation"))
@@ -346,7 +346,7 @@ QString CaptureFilePropertiesDialog::summaryToHtml()
             << table_data_tmpl.arg(interface_name)
             << table_data_tmpl.arg(interface_drops)
             << table_data_tmpl.arg(interface_cfilter)
-            << table_data_tmpl.arg(wtap_encap_string(iface.encap_type))
+            << table_data_tmpl.arg(wtap_encap_description(iface.encap_type))
             << table_data_tmpl.arg(interface_snaplen)
             << table_row_end;
 
@@ -542,7 +542,7 @@ void CaptureFilePropertiesDialog::fillDetails()
 
             if (pkt_comment) {
                 QString frame_comment_html = tr("<p>Frame %1: ").arg(framenum);
-                QString raw_comment = pkt_comment;
+                QString raw_comment = gchar_free_to_qstring(pkt_comment);
 
                 frame_comment_html += html_escape(raw_comment).replace('\n', "<br>");
                 frame_comment_html += "</p>\n";

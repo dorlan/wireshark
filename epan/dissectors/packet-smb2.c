@@ -55,6 +55,7 @@ static int hf_smb2_nt_status = -1;
 static int hf_smb2_response_to = -1;
 static int hf_smb2_response_in = -1;
 static int hf_smb2_time = -1;
+static int hf_smb2_preauth_hash = -1;
 static int hf_smb2_header_len = -1;
 static int hf_smb2_msg_id = -1;
 static int hf_smb2_pid = -1;
@@ -818,6 +819,25 @@ static const val64_string unique_unsolicited_response[] = {
 
 #define SMB2_NUM_PROCEDURES     256
 
+static void update_preauth_hash(void *buf, tvbuff_t *tvb)
+{
+	gcry_error_t err;
+	gcry_md_hd_t md;
+	void *pkt;
+
+	err = gcry_md_open(&md, GCRY_MD_SHA512, 0);
+	if (err)
+		return;
+
+	/* we dup in case of non-contiguous packet */
+	pkt = tvb_memdup(wmem_packet_scope(), tvb, 0, tvb_captured_length(tvb));
+	gcry_md_write(md, buf, SMB2_PREAUTH_HASH_SIZE);
+	gcry_md_write(md, pkt, tvb_captured_length(tvb));
+	gcry_md_final(md);
+	memcpy(buf, gcry_md_read(md, 0), SMB2_PREAUTH_HASH_SIZE);
+	gcry_md_close(md);
+}
+
 static void
 smb2stat_init(struct register_srt* srt _U_, GArray* srt_array)
 {
@@ -831,7 +851,7 @@ smb2stat_init(struct register_srt* srt _U_, GArray* srt_array)
 	}
 }
 
-static int
+static tap_packet_status
 smb2stat_packet(void *pss, packet_info *pinfo, epan_dissect_t *edt _U_, const void *prv)
 {
 	guint i = 0;
@@ -841,16 +861,16 @@ smb2stat_packet(void *pss, packet_info *pinfo, epan_dissect_t *edt _U_, const vo
 
 	/* we are only interested in response packets */
 	if(!(si->flags&SMB2_FLAGS_RESPONSE)){
-		return 0;
+		return TAP_PACKET_DONT_REDRAW;
 	}
 	/* We should not include cancel and oplock break requests either */
 	if (si->opcode == SMB2_COM_CANCEL || si->opcode == SMB2_COM_BREAK) {
-		return 0;
+		return TAP_PACKET_DONT_REDRAW;
 	}
 
 	/* if we haven't seen the request, just ignore it */
 	if(!si->saved){
-		return 0;
+		return TAP_PACKET_DONT_REDRAW;
 	}
 
 	/* SMB2 SRT can be very inaccurate in the presence of retransmissions. Retransmitted responses
@@ -860,11 +880,11 @@ smb2stat_packet(void *pss, packet_info *pinfo, epan_dissect_t *edt _U_, const vo
 	 * for the last received response accomplishes this goal without requiring the TCP pref
 	 * "Do not call subdissectors for error packets" to be set. */
 	if ((si->saved->frame_req == 0) || (si->saved->frame_res != pinfo->num))
-		return 0;
+		return TAP_PACKET_DONT_REDRAW;
 
 	smb2_srt_table = g_array_index(data->srt_array, srt_stat_table*, i);
 	add_srt_table_data(smb2_srt_table, si->opcode, &si->saved->req_time, pinfo);
-	return 1;
+	return TAP_PACKET_REDRAW;
 }
 
 /* Structure for SessionID <=> SessionKey mapping for decryption. */
@@ -1100,6 +1120,62 @@ smb2_conv_destroy(wmem_allocator_t *allocator _U_, wmem_cb_event_t event _U_,
 	/* This conversation is gone, return FALSE to indicate we don't
 	 * want to be called again for this conversation. */
 	return FALSE;
+}
+
+static smb2_sesid_info_t *
+smb2_get_session(smb2_conv_info_t *conv, guint64 id, packet_info *pinfo, smb2_info_t *si)
+{
+	smb2_sesid_info_t key = {.sesid = id};
+	smb2_sesid_info_t *ses = (smb2_sesid_info_t *)g_hash_table_lookup(conv->sesids, &key);
+
+	if (!ses) {
+		ses = wmem_new0(wmem_file_scope(), smb2_sesid_info_t);
+		ses->sesid = id;
+		ses->auth_frame = (guint32)-1;
+		ses->tids = wmem_map_new(wmem_file_scope(), smb2_tid_info_hash, smb2_tid_info_equal);
+		seskey_find_sid_key(id, ses->session_key);
+		if (pinfo && si) {
+			if (si->flags & SMB2_FLAGS_RESPONSE) {
+				ses->server_port = pinfo->srcport;
+			} else {
+				ses->server_port = pinfo->destport;
+			}
+		}
+		g_hash_table_insert(conv->sesids, ses, ses);
+	}
+
+	return ses;
+}
+
+static void
+smb2_add_session_info(proto_tree *tree, tvbuff_t *tvb, gint start, smb2_sesid_info_t *ses)
+{
+	proto_item  *item;
+	if (!ses)
+		return;
+
+	if (ses->acct_name) {
+		item = proto_tree_add_string(tree, hf_smb2_acct_name, tvb, start, 0, ses->acct_name);
+		PROTO_ITEM_SET_GENERATED(item);
+		proto_item_append_text(item, " Acct:%s", ses->acct_name);
+	}
+
+	if (ses->domain_name) {
+		item = proto_tree_add_string(tree, hf_smb2_domain_name, tvb, start, 0, ses->domain_name);
+		PROTO_ITEM_SET_GENERATED(item);
+		proto_item_append_text(item, " Domain:%s", ses->domain_name);
+	}
+
+	if (ses->host_name) {
+		item = proto_tree_add_string(tree, hf_smb2_host_name, tvb, start, 0, ses->host_name);
+		PROTO_ITEM_SET_GENERATED(item);
+		proto_item_append_text(item, " Host:%s", ses->host_name);
+	}
+
+	if (ses->auth_frame != (guint32)-1) {
+		item = proto_tree_add_uint(tree, hf_smb2_auth_frame, tvb, start, 0, ses->auth_frame);
+		PROTO_ITEM_SET_GENERATED(item);
+	}
 }
 
 static void smb2_key_derivation(const guint8 *KI, guint32 KI_len,
@@ -1544,7 +1620,7 @@ static const true_false_string tfs_flags_dfs_op = {
 };
 
 static const true_false_string tfs_flags_chained = {
-	"This pdu a CHAINED command",
+	"This pdu is a CHAINED command",
 	"This pdu is NOT a chained command"
 };
 
@@ -1560,7 +1636,7 @@ static const true_false_string tfs_flags_replay_operation = {
 
 static const true_false_string tfs_flags_priority_mask = {
 	"This pdu contains a PRIORITY",
-	"This pdu does NOT contain a PRIORITY1"
+	"This pdu does NOT contain a PRIORITY"
 };
 
 static const true_false_string tfs_cap_dfs = {
@@ -1961,7 +2037,7 @@ dissect_smb2_fid(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset
 	switch (mode) {
 	case FID_MODE_OPEN:
 		offset = dissect_nt_guid_hnd(tvb, offset, pinfo, tree, &di, drep, hf_smb2_fid, &policy_hnd, &hnd_item, TRUE, FALSE);
-		if (!pinfo->fd->flags.visited) {
+		if (!pinfo->fd->visited) {
 			sfi = wmem_new(wmem_file_scope(), smb2_fid_info_t);
 			*sfi = sfi_key;
 			if (si->saved && si->saved->extra_info_type == SMB2_EI_FILENAME) {
@@ -3020,24 +3096,33 @@ dissect_smb2_secblob(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, smb2_i
  * Derive client and server decryption keys from the secret session key
  * and set them in the session object.
  */
-static void smb2_set_session_keys(smb2_sesid_info_t *sesid, const guint8 *session_key)
+static void smb2_generate_decryption_keys(smb2_conv_info_t *conv, smb2_sesid_info_t *ses)
 {
-	if (memcmp(session_key, zeros, NTLMSSP_KEY_LEN) != 0) {
-		smb2_key_derivation(session_key,
+	if (memcmp(ses->session_key, zeros, NTLMSSP_KEY_LEN) == 0)
+		return;
+
+	if (conv->dialect == 0x300) {
+		smb2_key_derivation(ses->session_key,
 				    NTLMSSP_KEY_LEN,
 				    "SMB2AESCCM", 11,
 				    "ServerIn ", 10,
-				    sesid->server_decryption_key);
-		smb2_key_derivation(session_key,
+				    ses->server_decryption_key);
+		smb2_key_derivation(ses->session_key,
 				    NTLMSSP_KEY_LEN,
 				    "SMB2AESCCM", 11,
 				    "ServerOut", 10,
-				    sesid->client_decryption_key);
-	} else {
-		memset(sesid->server_decryption_key, 0,
-		       sizeof(sesid->server_decryption_key));
-		memset(sesid->client_decryption_key, 0,
-		       sizeof(sesid->client_decryption_key));
+				    ses->client_decryption_key);
+	} else if (conv->dialect >= 0x311) {
+		smb2_key_derivation(ses->session_key,
+				    NTLMSSP_KEY_LEN,
+				    "SMBC2SCipherKey", 16,
+				    ses->preauth_hash, SMB2_PREAUTH_HASH_SIZE,
+				    ses->server_decryption_key);
+		smb2_key_derivation(ses->session_key,
+				    NTLMSSP_KEY_LEN,
+				    "SMBS2CCipherKey", 16,
+				    ses->preauth_hash, SMB2_PREAUTH_HASH_SIZE,
+				    ses->client_decryption_key);
 	}
 }
 
@@ -3047,6 +3132,8 @@ dissect_smb2_session_setup_request(tvbuff_t *tvb, packet_info *pinfo, proto_tree
 	offset_length_buffer_t  s_olb;
 	const ntlmssp_header_t *ntlmssph;
 	static int ntlmssp_tap_id = 0;
+	smb2_saved_info_t *ssi = si->saved;
+	proto_item *hash_item;
 	int        idx;
 
 	if (!ntlmssp_tap_id) {
@@ -3065,6 +3152,24 @@ dissect_smb2_session_setup_request(tvbuff_t *tvb, packet_info *pinfo, proto_tree
 		}
 	}
 
+	if (!pinfo->fd->visited && ssi) {
+		/* compute preauth hash on first pass */
+
+		/* start from last preauth hash of the connection if 1st request */
+		if (si->sesid == 0)
+			memcpy(si->conv->preauth_hash_ses, si->conv->preauth_hash_con, SMB2_PREAUTH_HASH_SIZE);
+
+		ssi->preauth_hash_req = (guint8*)wmem_alloc0(wmem_file_scope(), SMB2_PREAUTH_HASH_SIZE);
+		update_preauth_hash(si->conv->preauth_hash_current, tvb);
+		memcpy(ssi->preauth_hash_req, si->conv->preauth_hash_current, SMB2_PREAUTH_HASH_SIZE);
+	}
+
+	if (ssi && ssi->preauth_hash_req) {
+		hash_item = proto_tree_add_bytes_with_length(tree, hf_smb2_preauth_hash, tvb,
+							     0, tvb_captured_length(tvb),
+							     ssi->preauth_hash_req, SMB2_PREAUTH_HASH_SIZE);
+		PROTO_ITEM_SET_GENERATED(hash_item);
+	}
 
 	/* buffer code */
 	offset = dissect_smb2_buffercode(tree, tvb, offset, NULL);
@@ -3097,33 +3202,19 @@ dissect_smb2_session_setup_request(tvbuff_t *tvb, packet_info *pinfo, proto_tree
 	offset = dissect_smb2_olb_tvb_max_offset(offset, &s_olb);
 
 	/* If we have found a uid->acct_name mapping, store it */
-	if (!pinfo->fd->flags.visited) {
+	if (!pinfo->fd->visited) {
 		idx = 0;
 		while ((ntlmssph = (const ntlmssp_header_t *)fetch_tapped_data(ntlmssp_tap_id, idx++)) != NULL) {
 			if (ntlmssph && ntlmssph->type == NTLMSSP_AUTH) {
-				smb2_sesid_info_t *sesid;
-				guint8 custom_seskey[NTLMSSP_KEY_LEN];
-				const guint8 *session_key;
-
-				sesid = wmem_new(wmem_file_scope(), smb2_sesid_info_t);
-				sesid->sesid = si->sesid;
-				sesid->acct_name = wmem_strdup(wmem_file_scope(), ntlmssph->acct_name);
-				sesid->domain_name = wmem_strdup(wmem_file_scope(), ntlmssph->domain_name);
-				sesid->host_name = wmem_strdup(wmem_file_scope(), ntlmssph->host_name);
-
-				/* Try to see first if we have a
-				 * session key set in the pref for
-				 * this particular session id */
-				if (seskey_find_sid_key(si->sesid, custom_seskey)) {
-					session_key = custom_seskey;
-				} else {
-					session_key = ntlmssph->session_key;
+				si->session = smb2_get_session(si->conv, si->sesid, pinfo, si);
+				si->session->acct_name = wmem_strdup(wmem_file_scope(), ntlmssph->acct_name);
+				si->session->domain_name = wmem_strdup(wmem_file_scope(), ntlmssph->domain_name);
+				si->session->host_name = wmem_strdup(wmem_file_scope(), ntlmssph->host_name);
+				/* don't overwrite session key from preferences */
+				if (memcmp(si->session->session_key, zeros, SMB_SESSION_ID_SIZE) == 0) {
+					memcpy(si->session->session_key, ntlmssph->session_key, NTLMSSP_KEY_LEN);
 				}
-				smb2_set_session_keys(sesid, session_key);
-				sesid->server_port = pinfo->destport;
-				sesid->auth_frame = pinfo->num;
-				sesid->tids = g_hash_table_new(smb2_tid_info_hash, smb2_tid_info_equal);
-				g_hash_table_insert(si->conv->sesids, sesid, sesid);
+				si->session->auth_frame = pinfo->num;
 			}
 		}
 	}
@@ -3256,9 +3347,51 @@ dissect_smb2_error_response(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *t
 }
 
 static int
-dissect_smb2_session_setup_response(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, smb2_info_t *si _U_)
+dissect_smb2_session_setup_response(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, smb2_info_t *si)
 {
 	offset_length_buffer_t s_olb;
+	proto_item *hash_item;
+	smb2_saved_info_t *ssi = si->saved;
+
+	si->session = smb2_get_session(si->conv, si->sesid, pinfo, si);
+	if (si->status == 0) {
+		si->session->auth_frame = pinfo->num;
+	}
+
+	/* compute preauth hash on first pass */
+	if (!pinfo->fd->visited && ssi) {
+		ssi->preauth_hash_res = (guint8*)wmem_alloc0(wmem_file_scope(), SMB2_PREAUTH_HASH_SIZE);
+		/*
+		 * Preauth hash can only be used if the session is
+		 * established i.e. last session setup response has a
+		 * success status. As per the specification, the last
+		 * response is NOT hashed.
+		 */
+		if (si->status != 0) {
+			/*
+			 * Not sucessful means either more req/rsp
+			 * processing is required or we reached an
+			 * error, so update hash.
+			 */
+			update_preauth_hash(si->conv->preauth_hash_current, tvb);
+		} else {
+			/*
+			 * Session is established, we can generate the keys
+			 */
+			memcpy(si->session->preauth_hash, si->conv->preauth_hash_current, SMB2_PREAUTH_HASH_SIZE);
+			smb2_generate_decryption_keys(si->conv, si->session);
+		}
+
+		/* In all cases, stash the preauth hash */
+		memcpy(ssi->preauth_hash_res, si->conv->preauth_hash_current, SMB2_PREAUTH_HASH_SIZE);
+	}
+
+	if (ssi && ssi->preauth_hash_res) {
+		hash_item = proto_tree_add_bytes_with_length(tree, hf_smb2_preauth_hash, tvb,
+							     0, tvb_captured_length(tvb),
+							     ssi->preauth_hash_res, SMB2_PREAUTH_HASH_SIZE);
+		PROTO_ITEM_SET_GENERATED(hash_item);
+	}
 
 	/* session_setup is special and we don't use dissect_smb2_error_response() here! */
 
@@ -3278,7 +3411,7 @@ dissect_smb2_session_setup_response(tvbuff_t *tvb, packet_info *pinfo, proto_tre
 
 	/* If we have found a uid->acct_name mapping, store it */
 #ifdef HAVE_KERBEROS
-	if (!pinfo->fd->flags.visited && si->status == 0) {
+	if (!pinfo->fd->visited && si->status == 0) {
 		enc_key_t *ek;
 
 		if (krb_decrypt) {
@@ -3292,27 +3425,7 @@ dissect_smb2_session_setup_response(tvbuff_t *tvb, packet_info *pinfo, proto_tre
 		}
 
 		if (ek != NULL) {
-			smb2_sesid_info_t *sesid;
-			guint8 custom_seskey[NTLMSSP_KEY_LEN] = { 0, };
-			const guint8 *session_key;
-
-			sesid = wmem_new(wmem_file_scope(), smb2_sesid_info_t);
-			sesid->sesid = si->sesid;
-			/* TODO: fill in the correct information */
-			sesid->acct_name = NULL;
-			sesid->domain_name = NULL;
-			sesid->host_name = NULL;
-
-			if (seskey_find_sid_key(si->sesid, custom_seskey)) {
-				session_key = custom_seskey;
-			} else {
-				session_key = ek->keyvalue;
-			}
-			smb2_set_session_keys(sesid, session_key);
-			sesid->server_port = pinfo->srcport;
-			sesid->auth_frame = pinfo->num;
-			sesid->tids = g_hash_table_new(smb2_tid_info_hash, smb2_tid_info_equal);
-			g_hash_table_insert(si->conv->sesids, sesid, sesid);
+			/* TODO: fill in the correct user/dom/host information */
 		}
 	}
 #endif
@@ -3344,7 +3457,7 @@ dissect_smb2_tree_connect_request(tvbuff_t *tvb, packet_info *pinfo, proto_tree 
 	/* treelen  +1 is overkill here if the string is unicode,
 	 * but who ever has more than a handful of TCON in a trace anyways
 	 */
-	if (!pinfo->fd->flags.visited && si->saved && buf && olb.len) {
+	if (!pinfo->fd->visited && si->saved && buf && olb.len) {
 		si->saved->extra_info_type = SMB2_EI_TREENAME;
 		si->saved->extra_info = wmem_alloc(wmem_file_scope(), olb.len+1);
 		g_snprintf((char *)si->saved->extra_info,olb.len+1,"%s",buf);
@@ -3376,13 +3489,13 @@ dissect_smb2_tree_connect_response(tvbuff_t *tvb, packet_info *pinfo, proto_tree
 	proto_tree_add_item(tree, hf_smb2_reserved, tvb, offset, 1, ENC_NA);
 	offset += 1;
 
-	if (!pinfo->fd->flags.visited && si->saved && si->saved->extra_info_type == SMB2_EI_TREENAME && si->session) {
+	if (!pinfo->fd->visited && si->saved && si->saved->extra_info_type == SMB2_EI_TREENAME && si->session) {
 		smb2_tid_info_t *tid, tid_key;
 
 		tid_key.tid = si->tid;
-		tid = (smb2_tid_info_t *)g_hash_table_lookup(si->session->tids, &tid_key);
+		tid = (smb2_tid_info_t *)wmem_map_lookup(si->session->tids, &tid_key);
 		if (tid) {
-			g_hash_table_remove(si->session->tids, &tid_key);
+			wmem_map_remove(si->session->tids, &tid_key);
 		}
 		tid = wmem_new(wmem_file_scope(), smb2_tid_info_t);
 		tid->tid = si->tid;
@@ -3390,7 +3503,7 @@ dissect_smb2_tree_connect_response(tvbuff_t *tvb, packet_info *pinfo, proto_tree
 		tid->connect_frame = pinfo->num;
 		tid->share_type = share_type;
 
-		g_hash_table_insert(si->session->tids, tid, tid);
+		wmem_map_insert(si->session->tids, tid, tid);
 
 		si->saved->extra_info_type = SMB2_EI_NONE;
 		si->saved->extra_info = NULL;
@@ -3682,7 +3795,7 @@ dissect_smb2_find_request(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, i
 
 	offset = dissect_smb2_olb_tvb_max_offset(offset, &olb);
 
-	if (!pinfo->fd->flags.visited && si->saved && olb.len) {
+	if (!pinfo->fd->visited && si->saved && olb.len) {
 		si->saved->extra_info_type = SMB2_EI_FINDPATTERN;
 		si->saved->extra_info = wmem_alloc(wmem_file_scope(), olb.len+1);
 		g_snprintf((char *)si->saved->extra_info,olb.len+1,"%s",buf);
@@ -4294,7 +4407,7 @@ dissect_smb2_find_response(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *tr
 		PROTO_ITEM_SET_GENERATED(item);
 	}
 
-	if (!pinfo->fd->flags.visited && si->saved && si->saved->extra_info_type == SMB2_EI_FINDPATTERN) {
+	if (!pinfo->fd->visited && si->saved && si->saved->extra_info_type == SMB2_EI_FINDPATTERN) {
 		col_append_fstr(pinfo->cinfo, COL_INFO, " %s Pattern: %s",
 				val_to_str(si->saved->infolevel, smb2_find_info_levels, "(Level:0x%02x)"),
 				(const char *)si->saved->extra_info);
@@ -4390,13 +4503,30 @@ dissect_smb2_negotiate_context(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree
 }
 
 static int
-dissect_smb2_negotiate_protocol_request(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *tree, int offset, smb2_info_t *si _U_)
+dissect_smb2_negotiate_protocol_request(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, smb2_info_t *si)
 {
 	guint16 dc;
 	guint16 i;
 	gboolean supports_smb_3_10 = FALSE;
 	guint32 nco;
 	guint16 ncc;
+	proto_item *hash_item = NULL;
+	smb2_saved_info_t *ssi = si->saved;
+
+	/* compute preauth hash on first pass */
+	if (!pinfo->fd->visited && ssi) {
+		ssi->preauth_hash_req = (guint8*)wmem_alloc0(wmem_file_scope(), SMB2_PREAUTH_HASH_SIZE);
+		update_preauth_hash(si->conv->preauth_hash_current, tvb);
+		memcpy(ssi->preauth_hash_req, si->conv->preauth_hash_current, SMB2_PREAUTH_HASH_SIZE);
+	}
+
+	if (ssi && ssi->preauth_hash_req) {
+		hash_item = proto_tree_add_bytes_with_length(tree,
+							     hf_smb2_preauth_hash, tvb,
+							     0, tvb_captured_length(tvb),
+							     ssi->preauth_hash_req, SMB2_PREAUTH_HASH_SIZE);
+		PROTO_ITEM_SET_GENERATED(hash_item);
+	}
 
 	/* buffer code */
 	offset = dissect_smb2_buffercode(tree, tvb, offset, NULL);
@@ -4469,14 +4599,38 @@ dissect_smb2_negotiate_protocol_request(tvbuff_t *tvb, packet_info *pinfo _U_, p
 }
 
 static int
-dissect_smb2_negotiate_protocol_response(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, smb2_info_t *si _U_)
+dissect_smb2_negotiate_protocol_response(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, smb2_info_t *si)
 {
 	offset_length_buffer_t s_olb;
-	guint16 d;
 	guint16 i;
 	guint32 nco;
 	guint16 ncc;
 	gboolean continue_dissection;
+	proto_item *hash_item = NULL;
+	smb2_saved_info_t *ssi = si->saved;
+
+	/* compute preauth hash on first pass */
+	if (!pinfo->fd->visited && ssi) {
+		ssi->preauth_hash_res = (guint8*)wmem_alloc0(wmem_file_scope(), SMB2_PREAUTH_HASH_SIZE);
+		update_preauth_hash(si->conv->preauth_hash_current, tvb);
+		memcpy(ssi->preauth_hash_res, si->conv->preauth_hash_current, SMB2_PREAUTH_HASH_SIZE);
+
+		/*
+		 * All new sessions on this conversation must reuse
+		 * the preauth hash value at the time of the negprot
+		 * response, so we stash it and switch buffers
+		 */
+		memcpy(si->conv->preauth_hash_ses, si->conv->preauth_hash_current, SMB2_PREAUTH_HASH_SIZE);
+		si->conv->preauth_hash_current = si->conv->preauth_hash_ses;
+	}
+
+	if (ssi && ssi->preauth_hash_res) {
+		hash_item = proto_tree_add_bytes_with_length(tree,
+							     hf_smb2_preauth_hash, tvb,
+							     0, tvb_captured_length(tvb),
+							     ssi->preauth_hash_res, SMB2_PREAUTH_HASH_SIZE);
+		PROTO_ITEM_SET_GENERATED(hash_item);
+	}
 
 	switch (si->status) {
 	/* buffer code */
@@ -4490,7 +4644,7 @@ dissect_smb2_negotiate_protocol_response(tvbuff_t *tvb, packet_info *pinfo, prot
 	offset++;
 
 	/* dialect picked */
-	d = tvb_get_letohs(tvb, offset);
+	si->conv->dialect = tvb_get_letohs(tvb, offset);
 	proto_tree_add_item(tree, hf_smb2_dialect, tvb, offset, 2, ENC_LITTLE_ENDIAN);
 	offset += 2;
 
@@ -4539,7 +4693,7 @@ dissect_smb2_negotiate_protocol_response(tvbuff_t *tvb, packet_info *pinfo, prot
 
 	offset = dissect_smb2_olb_tvb_max_offset(offset, &s_olb);
 
-	if (d < 0x310) {
+	if (si->conv->dialect < 0x310) {
 		ncc = 0;
 	}
 
@@ -5319,7 +5473,7 @@ dissect_file_data_smb2_pipe(tvbuff_t *raw_tvb, packet_info *pinfo, proto_tree *t
 	 * pdu and if not, check if the dissector wants us
 	 * to reassemble it
 	 */
-	if (!pinfo->fd->flags.visited) {
+	if (!pinfo->fd->visited) {
 		/*
 		 * This is the first pass.
 		 *
@@ -7971,7 +8125,7 @@ dissect_smb2_create_request(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree,
 	col_append_fstr(pinfo->cinfo, COL_INFO, " File: %s", fname);
 
 	/* save the name if it looks sane */
-	if (!pinfo->fd->flags.visited) {
+	if (!pinfo->fd->visited) {
 		if (si->saved && si->saved->extra_info_type == SMB2_EI_FILENAME) {
 			wmem_free(wmem_file_scope(), si->saved->extra_info);
 			si->saved->extra_info = NULL;
@@ -8899,11 +9053,9 @@ dissect_smb2_transform_header(packet_info *pinfo, proto_tree *tree,
 {
 	proto_item        *sesid_item     = NULL;
 	proto_tree        *sesid_tree     = NULL;
-	smb2_sesid_info_t  sesid_key;
 	int                sesid_offset;
 	guint8            *plain_data     = NULL;
 	guint8            *decryption_key = NULL;
-	proto_item        *item;
 
 	static const int *sf_fields[] = {
 		&hf_smb2_encryption_aes128_ccm,
@@ -8944,27 +9096,10 @@ dissect_smb2_transform_header(packet_info *pinfo, proto_tree *tree,
 	offset += 8;
 
 	/* now we need to first lookup the uid session */
-	sesid_key.sesid = sti->sesid;
-	sti->session = (smb2_sesid_info_t *)g_hash_table_lookup(sti->conv->sesids, &sesid_key);
+	sti->session = smb2_get_session(sti->conv, sti->sesid, NULL, NULL);
+	smb2_add_session_info(sesid_tree, tvb, sesid_offset, sti->session);
 
-	if (sti->session != NULL && sti->session->auth_frame != (guint32)-1) {
-		item = proto_tree_add_string(sesid_tree, hf_smb2_acct_name, tvb, sesid_offset, 0, sti->session->acct_name);
-		PROTO_ITEM_SET_GENERATED(item);
-		proto_item_append_text(sesid_item, " Acct:%s", sti->session->acct_name);
-
-		item = proto_tree_add_string(sesid_tree, hf_smb2_domain_name, tvb, sesid_offset, 0, sti->session->domain_name);
-		PROTO_ITEM_SET_GENERATED(item);
-		proto_item_append_text(sesid_item, " Domain:%s", sti->session->domain_name);
-
-		item = proto_tree_add_string(sesid_tree, hf_smb2_host_name, tvb, sesid_offset, 0, sti->session->host_name);
-		PROTO_ITEM_SET_GENERATED(item);
-		proto_item_append_text(sesid_item, " Host:%s", sti->session->host_name);
-
-		item = proto_tree_add_uint(sesid_tree, hf_smb2_auth_frame, tvb, sesid_offset, 0, sti->session->auth_frame);
-		PROTO_ITEM_SET_GENERATED(item);
-	}
-
-	if (sti->session != NULL && sti->alg == ENC_ALG_aes128_ccm) {
+	if (sti->alg == ENC_ALG_aes128_ccm) {
 		if (pinfo->destport == sti->session->server_port) {
 			decryption_key = sti->session->server_decryption_key;
 		} else {
@@ -9100,55 +9235,23 @@ dissect_smb2_tid_sesid(packet_info *pinfo _U_, proto_tree *tree, tvbuff_t *tvb, 
 	sesid_key.sesid = si->sesid;
 	si->session = (smb2_sesid_info_t *)g_hash_table_lookup(si->conv->sesids, &sesid_key);
 	if (!si->session) {
-		guint8 seskey[NTLMSSP_KEY_LEN] = {0, };
-
-		if (si->opcode != 0x03)
+		if (si->opcode != SMB2_COM_TREE_CONNECT)
 			return offset;
 
-
 		/* if we come to a session that is unknown, and the operation is
-		 * a tree connect, we create a dummy sessison, so we can hang the
+		 * a tree connect, we create a dummy session, so we can hang the
 		 * tree data on it
 		 */
-		si->session = wmem_new0(wmem_file_scope(), smb2_sesid_info_t);
-		si->session->sesid      = si->sesid;
-		si->session->auth_frame = (guint32)-1;
-		si->session->tids       = g_hash_table_new(smb2_tid_info_hash, smb2_tid_info_equal);
-		if (si->flags & SMB2_FLAGS_RESPONSE) {
-			si->session->server_port = pinfo->srcport;
-		} else {
-			si->session->server_port = pinfo->destport;
-		}
-		if (seskey_find_sid_key(si->sesid, seskey)) {
-			smb2_set_session_keys(si->session, seskey);
-		}
-
-		g_hash_table_insert(si->conv->sesids, si->session, si->session);
-
+		si->session = smb2_get_session(si->conv, si->sesid, pinfo, si);
 		return offset;
 	}
 
-	if (si->session->auth_frame != (guint32)-1) {
-		item = proto_tree_add_string(sesid_tree, hf_smb2_acct_name, tvb, sesid_offset, 0, si->session->acct_name);
-		PROTO_ITEM_SET_GENERATED(item);
-		proto_item_append_text(sesid_item, " Acct:%s", si->session->acct_name);
-
-		item = proto_tree_add_string(sesid_tree, hf_smb2_domain_name, tvb, sesid_offset, 0, si->session->domain_name);
-		PROTO_ITEM_SET_GENERATED(item);
-		proto_item_append_text(sesid_item, " Domain:%s", si->session->domain_name);
-
-		item = proto_tree_add_string(sesid_tree, hf_smb2_host_name, tvb, sesid_offset, 0, si->session->host_name);
-		PROTO_ITEM_SET_GENERATED(item);
-		proto_item_append_text(sesid_item, " Host:%s", si->session->host_name);
-
-		item = proto_tree_add_uint(sesid_tree, hf_smb2_auth_frame, tvb, sesid_offset, 0, si->session->auth_frame);
-		PROTO_ITEM_SET_GENERATED(item);
-	}
+	smb2_add_session_info(sesid_tree, tvb, sesid_offset, si->session);
 
 	if (!(si->flags&SMB2_FLAGS_ASYNC_CMD)) {
 		/* see if we can find the name for this tid */
 		tid_key.tid = si->tid;
-		si->tree = (smb2_tid_info_t *)g_hash_table_lookup(si->session->tids, &tid_key);
+		si->tree = (smb2_tid_info_t *)wmem_map_lookup(si->session->tids, &tid_key);
 		if (!si->tree) return offset;
 
 		item = proto_tree_add_string(tid_tree, hf_smb2_tree, tvb, tid_offset, 4, si->tree->name);
@@ -9202,7 +9305,7 @@ dissect_smb2(tvbuff_t *tvb, packet_info *pinfo, proto_tree *parent_tree, gboolea
 		/* no smb2_into_t structure for this conversation yet,
 		 * create it.
 		 */
-		si->conv = wmem_new(wmem_file_scope(), smb2_conv_info_t);
+		si->conv = wmem_new0(wmem_file_scope(), smb2_conv_info_t);
 		/* qqq this leaks memory for now since we never free
 		   the hashtables */
 		si->conv->matched = g_hash_table_new(smb2_saved_info_hash_matched,
@@ -9214,6 +9317,7 @@ dissect_smb2(tvbuff_t *tvb, packet_info *pinfo, proto_tree *parent_tree, gboolea
 		si->conv->fids = g_hash_table_new(smb2_fid_info_hash,
 			smb2_fid_info_equal);
 		si->conv->files = g_hash_table_new(smb2_eo_files_hash,smb2_eo_files_equal);
+		si->conv->preauth_hash_current = si->conv->preauth_hash_con;
 
 		/* Bit of a hack to avoid leaking the hash tables - register a
 		 * callback to free them. Ideally wmem would implement a simple
@@ -9334,7 +9438,7 @@ dissect_smb2(tvbuff_t *tvb, packet_info *pinfo, proto_tree *parent_tree, gboolea
 		}
 
 
-		if (!pinfo->fd->flags.visited) {
+		if (!pinfo->fd->visited) {
 			/* see if we can find this msg_id in the unmatched table */
 			ssi = (smb2_saved_info_t *)g_hash_table_lookup(si->conv->unmatched, &ssi_key);
 
@@ -9517,6 +9621,11 @@ proto_register_smb2(void)
 		{ &hf_smb2_time,
 			{ "Time from request", "smb2.time", FT_RELATIVE_TIME, BASE_NONE,
 			NULL, 0, "Time between Request and Response for SMB2 cmds", HFILL }
+		},
+
+		{ &hf_smb2_preauth_hash,
+			{ "Preauth Hash", "smb2.preauth_hash", FT_BYTES, BASE_NONE,
+			NULL, 0, "SMB3.1.1 pre-authentication SHA512 hash after hashing the packet", HFILL }
 		},
 
 		{ &hf_smb2_header_len,

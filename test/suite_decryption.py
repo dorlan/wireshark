@@ -10,7 +10,12 @@
 '''Decryption tests'''
 
 import os.path
+import shutil
+import subprocess
 import subprocesstest
+import sys
+import sysconfig
+import types
 import unittest
 import fixtures
 
@@ -102,6 +107,16 @@ class case_decrypt_dtls(subprocesstest.SubprocessTestCase):
         wfm_count = self.countOutput('Works for me!.')
         self.assertTrue(dt_count == 7 and wfm_count == 2)
 
+    def test_dtls_dsb_aes128ccm8(self, cmd_tshark, capture_file):
+        '''DTLS 1.2 with master secrets in a pcapng Decryption Secrets Block.'''
+        self.assertRun((cmd_tshark,
+                '-r', capture_file('dtls12-aes128ccm8-dsb.pcapng'),
+                '-x'
+            ))
+        dt_count = self.countOutput('Decrypted DTLS')
+        wfm_count = self.countOutput('Works for me!.')
+        self.assertTrue(dt_count == 7 and wfm_count == 2)
+
     def test_dtls_udt(self, cmd_tshark, dirs, capture_file, features):
         '''UDT over DTLS 1.2 with RSA key'''
         if not features.have_gnutls:
@@ -145,6 +160,20 @@ class case_decrypt_tls(subprocesstest.SubprocessTestCase):
                 '-Y', 'http',
             ))
         self.assertTrue(self.grepOutput('/'))
+
+    def test_tls_rsa_privkeys_uat(self, cmd_tshark, dirs, capture_file, features):
+        '''Check TLS decryption works using the rsa_keys UAT.'''
+        if not features.have_gnutls:
+            self.skipTest('Requires GnuTLS.')
+        key_file = os.path.join(dirs.key_dir, 'rsa-p-lt-q.key')
+        proc = self.assertRun((cmd_tshark,
+                '-r', capture_file('rsa-p-lt-q.pcap'),
+                '-o', 'uat:rsa_keys:"{}",""'.format(key_file.replace('\\', '\\x5c')),
+                '-Tfields',
+                '-e', 'http.request.uri',
+                '-Y', 'http',
+            ))
+        self.assertIn('/', proc.stdout_str)
 
     def test_tls_rsa_with_password(self, cmd_tshark, capture_file, features):
         '''TLS using the server's private key with password'''
@@ -848,3 +877,174 @@ class case_decrypt_knxip(subprocesstest.SubprocessTestCase):
         self.assertTrue(self.grepOutput('^IA 1[.]1[.]4 SeqNr 12345$'))
         self.assertTrue(self.grepOutput('^IA 2[.]1[.]0 key B0 B1 B2 B3 B4 B5 B6 B7 B8 B9 BA BB BC BD BE BF$'))
         self.assertTrue(self.grepOutput('^IA 2[.]1[.]0 SeqNr 1234$'))
+
+
+@fixtures.fixture(scope='session')
+def softhsm_paths(features):
+    if sys.platform == 'win32':
+        search_path = os.getenv('PATH') + r';C:\SoftHSM2\bin'
+    else:
+        search_path = None
+    softhsm_tool = shutil.which('softhsm2-util', path=search_path)
+    if not softhsm_tool:
+        # Note: do not fallback to SoftHSMv1. While available on Ubuntu 14.04
+        # (and 16.04), it is built with botan < 1.11.10 which causes a crash due
+        # to a conflict with the GMP library that is also used by GnuTLS/nettle.
+        # See https://github.com/randombit/botan/issues/1090
+        fixtures.skip('SoftHSM is not found')
+    # Find provider library path.
+    bindir = os.path.dirname(softhsm_tool)
+    libdir = os.path.join(os.path.dirname(bindir), 'lib')
+    if sys.platform == 'win32':
+        libdirs = [libdir, bindir]
+        if features.have_x64:
+            name = 'softhsm2-x64.dll'
+        else:
+            name = 'softhsm2.dll'
+    else:
+        # Debian/Ubuntu-specific paths
+        madir = sysconfig.get_config_var('multiarchsubdir')
+        libdir64_sub = os.path.join(libdir + '64', 'softhsm')
+        libdir_sub = os.path.join(libdir, 'softhsm')
+        libdirs = [os.path.join(libdir + madir, 'softhsm')] if madir else []
+        libdirs += [libdir_sub, libdir64_sub]
+        name = 'libsofthsm2.so'
+    for libdir in libdirs:
+        provider = os.path.join(libdir, name)
+        if os.path.exists(provider):
+            break
+    else:
+        # Even if p11-kit can automatically locate it, do not rely on it.
+        fixtures.skip('SoftHSM provider library not detected')
+    # Now check whether the import tool is usable. SoftHSM < 2.3.0 did not
+    # set CKA_DECRYPT when using softhsm2-tool --import and therefore cannot be
+    # used to import keys for decryption. Use GnuTLS p11tool as workaround.
+    softhsm_version = subprocess.check_output([softhsm_tool, '--version'],
+            universal_newlines=True).strip()
+    use_p11tool = softhsm_version in ('2.0.0', '2.1.0', '2.2.0')
+    if use_p11tool and not shutil.which('p11tool'):
+        fixtures.skip('SoftHSM available, but GnuTLS p11tool is unavailable')
+    return use_p11tool, softhsm_tool, provider
+
+
+@fixtures.fixture
+def softhsm(softhsm_paths, home_path, base_env):
+    '''Creates a temporary SoftHSM token store (and set it in the environment),
+    returns a function to populate that token store and the path to the PKCS #11
+    provider library.'''
+    use_p11tool, softhsm_tool, provider = softhsm_paths
+    conf_path = os.path.join(home_path, 'softhsm-test.conf')
+    db_path = os.path.join(home_path, 'softhsm-test-tokens')
+    os.makedirs(db_path)
+    with open(conf_path, 'w') as f:
+        f.write('directories.tokendir = %s\n' % db_path)
+        f.write('objectstore.backend = file\n')
+        # Avoid syslog spam
+        f.write('log.level = ERROR\n')
+    base_env['SOFTHSM2_CONF'] = conf_path
+
+    tool_env = base_env.copy()
+    if sys.platform == 'win32':
+        # Ensure that softhsm2-util can find the library.
+        tool_env['PATH'] += ';%s' % os.path.dirname(provider)
+
+    # Initialize tokens store.
+    token_name = 'Wireshark-Test-Tokens'
+    pin = 'Secret'
+    subprocess.check_call([softhsm_tool, '--init-token', '--slot', '0',
+        '--label', token_name, '--so-pin', 'Supersecret', '--pin', pin],
+        env=tool_env)
+    if use_p11tool:
+        tool_env['GNUTLS_PIN'] = pin
+
+    # Arbitrary IDs and labels.
+    ids = iter(range(0xab12, 0xffff))
+    def import_key(keyfile):
+        '''Returns a PKCS #11 URI to identify the imported key.'''
+        label = os.path.basename(keyfile)
+        obj_id = '%x' % next(ids)
+        if not use_p11tool:
+            tool_args = [softhsm_tool, '--import', keyfile, '--label', label,
+                    '--id', obj_id, '--pin', pin, '--token', token_name]
+        else:
+            # Fallback for SoftHSM < 2.3.0
+            tool_args = ['p11tool', '--provider', provider, '--batch',
+                    '--login', '--write', 'pkcs11:token=%s' % token_name,
+                    '--load-privkey', keyfile, '--label', label, '--id', obj_id]
+        subprocess.check_call(tool_args, env=tool_env)
+        id_str = '%{}{}%{}{}'.format(*obj_id)
+        return 'pkcs11:token=%s;id=%s;type=private' % (token_name, id_str)
+
+    return types.SimpleNamespace(import_key=import_key, provider=provider, pin=pin)
+
+
+@fixtures.mark_usefixtures('test_env')
+@fixtures.uses_fixtures
+class case_decrypt_pkcs11(subprocesstest.SubprocessTestCase):
+    def test_tls_pkcs11(self, cmd_tshark, dirs, capture_file, features, softhsm):
+        '''Check that a RSA key in a PKCS #11 token enables decryption.'''
+        if not features.have_pkcs11:
+            self.skipTest('Requires GnuTLS with PKCS #11 support.')
+        key_file = os.path.join(dirs.key_dir, 'rsa-p-lt-q.p8')
+        key_uri = softhsm.import_key(key_file)
+        proc = self.assertRun((cmd_tshark,
+                '-r', capture_file('rsa-p-lt-q.pcap'),
+                '-o', 'uat:pkcs11_libs:"{}"'.format(softhsm.provider.replace('\\', '\\x5c')),
+                '-o', 'uat:rsa_keys:"{}","{}"'.format(key_uri, softhsm.pin),
+                '-Tfields',
+                '-e', 'http.request.uri',
+                '-Y', 'http',
+            ))
+        self.assertIn('/', proc.stdout_str)
+
+@fixtures.mark_usefixtures('test_env')
+@fixtures.uses_fixtures
+class case_decrypt_smb2(subprocesstest.SubprocessTestCase):
+    def test_smb300_bad_key(self, cmd_tshark, capture_file):
+        '''Check that a bad session key doesn't crash'''
+        seskey = 'ffffffffffffffffffffffffffffffff'
+        sesid = '1900009c003c0000'
+        proc = self.assertRun((cmd_tshark,
+                '-r', capture_file('smb300-aes-128-ccm.pcap.gz'),
+                '-o', 'uat:smb2_seskey_list:{},{}'.format(sesid, seskey),
+                '-Y', 'frame.number == 7',
+        ))
+        self.assertIn('unknown', proc.stdout_str)
+
+    def test_smb311_bad_key(self, cmd_tshark, capture_file):
+        seskey = 'ffffffffffffffffffffffffffffffff'
+        sesid = '2900009c003c0000'
+        proc = self.assertRun((cmd_tshark,
+                '-r', capture_file('smb311-aes-128-ccm.pcap.gz'),
+                '-o', 'uat:smb2_seskey_list:{},{}'.format(sesid, seskey),
+                '-Y', 'frame.number == 7'
+        ))
+        self.assertIn('unknown', proc.stdout_str)
+
+    def test_smb300_aes128ccm(self, cmd_tshark, capture_file):
+        '''Check SMB 3.0 AES128CCM decryption.'''
+        sesid = '1900009c003c0000'
+        seskey = '9a9ea16a0cdbeb6064772318073f172f'
+        tree = r'\\dfsroot1.foo.test\IPC$'
+        proc = self.assertRun((cmd_tshark,
+                '-r', capture_file('smb300-aes-128-ccm.pcap.gz'),
+                '-o', 'uat:smb2_seskey_list:{},{}'.format(sesid, seskey),
+                '-Tfields',
+                '-e', 'smb2.tree',
+                '-Y', 'smb2.tree == "{}"'.format(tree.replace('\\', '\\\\')),
+        ))
+        self.assertEqual(tree, proc.stdout_str.strip())
+
+    def test_smb311_aes128ccm(self, cmd_tshark, capture_file):
+        '''Check SMB 3.1.1 AES128CCM decryption.'''
+        sesid = '2900009c003c0000'
+        seskey = 'f1fa528d3cd182cca67bd4596dabd885'
+        tree = r'\\dfsroot1.foo.test\IPC$'
+        proc = self.assertRun((cmd_tshark,
+                '-r', capture_file('smb311-aes-128-ccm.pcap.gz'),
+                '-o', 'uat:smb2_seskey_list:{},{}'.format(sesid, seskey),
+                '-Tfields',
+                '-e', 'smb2.tree',
+                '-Y', 'smb2.tree == "{}"'.format(tree.replace('\\', '\\\\')),
+        ))
+        self.assertEqual(tree, proc.stdout_str.strip())

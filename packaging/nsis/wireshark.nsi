@@ -515,10 +515,24 @@ File "${VCREDIST_EXE}"
 ; http://asawicki.info/news_1597_installing_visual_c_redistributable_package_from_command_line.html
 ExecWait '"$INSTDIR\vcredist_${TARGET_MACHINE}.exe" /install /quiet /norestart' $0
 DetailPrint "vcredist_${TARGET_MACHINE} returned $0"
-IntCmp $0 3010 redistReboot redistNoReboot
-redistReboot:
-SetRebootFlag true
-redistNoReboot:
+
+; https://docs.microsoft.com/en-us/windows/desktop/Msi/error-codes
+!define ERROR_SUCCESS 0
+!define ERROR_SUCCESS_REBOOT_INITIATED 1641
+!define ERROR_SUCCESS_REBOOT_REQUIRED 3010
+${Switch} $0
+  ${Case} ${ERROR_SUCCESS}
+    ${Break}
+  ${Case} ${ERROR_SUCCESS_REBOOT_INITIATED} ; Shouldn't happen.
+  ${Case} ${ERROR_SUCCESS_REBOOT_REQUIRED}
+    SetRebootFlag true
+    ${Break}
+  ${Default}
+      MessageBox MB_OK "The Visual C++ Redistributable installer failed with error $0.$\nPlease make sure you have KB2999226 or KB3118401 installed.$\nUnable to continue installation." /SD IDOK
+      Abort
+    ${Break}
+${EndSwitch}
+
 Delete "$INSTDIR\vcredist_${TARGET_MACHINE}.exe"
 
 
@@ -1068,12 +1082,14 @@ Section "Reordercap" SecReordercap
 ;-------------------------------------------
 SetOutPath $INSTDIR
 File "${STAGING_DIR}\reordercap.exe"
+File "${STAGING_DIR}\reordercap.html"
 SectionEnd
 
 Section "DFTest" SecDFTest
 ;-------------------------------------------
 SetOutPath $INSTDIR
 File "${STAGING_DIR}\dftest.exe"
+File "${STAGING_DIR}\dftest.html"
 SectionEnd
 
 Section "Capinfos" SecCapinfos
@@ -1088,6 +1104,13 @@ Section "Rawshark" SecRawshark
 SetOutPath $INSTDIR
 File "${STAGING_DIR}\rawshark.exe"
 File "${STAGING_DIR}\rawshark.html"
+SectionEnd
+
+Section /o "Randpkt" SecRandpkt
+;-------------------------------------------
+SetOutPath $INSTDIR
+File "${STAGING_DIR}\randpkt.exe"
+File "${STAGING_DIR}\randpkt.html"
 SectionEnd
 
 !ifdef MMDBRESOLVE_EXE
@@ -1189,6 +1212,7 @@ SectionEnd
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDFTest} "Shows display filter byte-code, for debugging dfilter routines"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecCapinfos} "Print information about capture files."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecRawshark} "Raw packet filter."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecRandpkt} "Random packet generator."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMMDBResolve} "MaxMind Database resolution tool"
 
 !ifdef USER_GUIDE_DIR
@@ -1280,8 +1304,8 @@ lbl_npcap_installed:
 
 lbl_winpcap_installed:
     WriteINIStr "$PLUGINSDIR\NpcapPage.ini" "Field 2" "Text" "$WINPCAP_NAME"
-    WriteINIStr "$PLUGINSDIR\NpcapPage.ini" "Field 4" "State" "0"
-    WriteINIStr "$PLUGINSDIR\NpcapPage.ini" "Field 5" "Text" "If selected, the currently installed $WINPCAP_NAME will be uninstalled first."
+    WriteINIStr "$PLUGINSDIR\NpcapPage.ini" "Field 4" "State" "1"
+    WriteINIStr "$PLUGINSDIR\NpcapPage.ini" "Field 5" "Text" "The currently installed $WINPCAP_NAME will be uninstalled first."
     Goto lbl_npcap_done
 
 lbl_npcap_do_install:

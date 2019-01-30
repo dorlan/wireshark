@@ -774,7 +774,7 @@ pcapng_read_if_descr_block(wtap *wth, FILE_T fh, pcapng_block_header_t *bh,
 
     pcapng_debug("pcapng_read_if_descr_block: IDB link_type %u (%s), snap %u",
                   link_type,
-                  wtap_encap_string(if_descr_mand->wtap_encap),
+                  wtap_encap_description(if_descr_mand->wtap_encap),
                   if_descr_mand->snap_len);
 
     if (if_descr_mand->snap_len > wtap_max_snaplen_for_encap(if_descr_mand->wtap_encap)) {
@@ -927,7 +927,7 @@ pcapng_read_if_descr_block(wtap *wth, FILE_T fh, pcapng_block_header_t *bh,
                         pcapng_debug("pcapng_read_if_descr_block: if_filter_str %s oh.option_length %u", if_filter.if_filter_str, oh.option_length);
                     } else if (option_content[0] == 1) {
                         if_filter.bpf_filter_len = oh.option_length-1;
-                        if_filter.if_filter_bpf_bytes = (guint8 *)option_content+1;
+                        if_filter.if_filter_bpf_bytes = option_content+1;
                     }
                     /* Fails with multiple options; we silently ignore the failure */
                     wtap_block_add_custom_option(wblock->block, oh.option_code, &if_filter, sizeof if_filter);
@@ -1283,7 +1283,7 @@ pcapng_read_packet_block(FILE_T fh, pcapng_block_header_t *bh, pcapng_t *pn, wta
 
     pcapng_debug("pcapng_read_packet_block: encapsulation = %d (%s), pseudo header size = %d.",
                   iface_info.wtap_encap,
-                  wtap_encap_string(iface_info.wtap_encap),
+                  wtap_encap_description(iface_info.wtap_encap),
                   pcap_get_phdr_size(iface_info.wtap_encap, &wblock->rec->rec_header.packet_header.pseudo_header));
     wblock->rec->rec_header.packet_header.interface_id = packet.interface_id;
     wblock->rec->rec_header.packet_header.pkt_encap = iface_info.wtap_encap;
@@ -1323,6 +1323,7 @@ pcapng_read_packet_block(FILE_T fh, pcapng_block_header_t *bh, pcapng_t *pn, wta
     }
 
     /* Option defaults */
+    g_free(wblock->rec->opt_comment);   /* Free memory from an earlier read. */
     wblock->rec->opt_comment = NULL;
     wblock->rec->rec_header.packet_header.drop_count  = -1;
     wblock->rec->rec_header.packet_header.pack_flags  = 0;
@@ -1341,7 +1342,11 @@ pcapng_read_packet_block(FILE_T fh, pcapng_block_header_t *bh, pcapng_t *pn, wta
         block_read -    /* fixed and variable part, including padding */
         (int)sizeof(bh->block_total_length);
 
-    /* Allocate enough memory to hold all options */
+    /* Ensure sufficient temporary memory to hold all options. It is not freed
+     * on return to avoid frequent reallocations. When called for sequential
+     * read (wtap_read), "wblock->rec == &wth->rec" (options_buf will be freed
+     * by wtap_sequential_close). For random access, memory is managed by the
+     * caller of wtap_seek_read. */
     opt_cont_buf_len = to_read;
     ws_buffer_assure_space(&wblock->rec->options_buf, opt_cont_buf_len);
     opt_ptr = ws_buffer_start_ptr(&wblock->rec->options_buf);
@@ -1370,6 +1375,7 @@ pcapng_read_packet_block(FILE_T fh, pcapng_block_header_t *bh, pcapng_t *pn, wta
             case(OPT_COMMENT):
                 if (oh->option_length > 0 && oh->option_length < opt_cont_buf_len) {
                     wblock->rec->presence_flags |= WTAP_HAS_COMMENTS;
+                    g_free(wblock->rec->opt_comment);
                     wblock->rec->opt_comment = g_strndup((char *)option_content, oh->option_length);
                     pcapng_debug("pcapng_read_packet_block: length %u opt_comment '%s'", oh->option_length, wblock->rec->opt_comment);
                 } else {
@@ -1567,6 +1573,7 @@ pcapng_read_simple_packet_block(FILE_T fh, pcapng_block_header_t *bh, pcapng_t *
     wblock->rec->ts.secs = 0;
     wblock->rec->ts.nsecs = 0;
     wblock->rec->rec_header.packet_header.interface_id = 0;
+    g_free(wblock->rec->opt_comment);   /* Free memory from an earlier read. */
     wblock->rec->opt_comment = NULL;
     wblock->rec->rec_header.packet_header.drop_count = 0;
     wblock->rec->rec_header.packet_header.pack_flags = 0;
@@ -2646,11 +2653,7 @@ pcapng_process_idb(wtap *wth, pcapng_t *pcapng, wtapng_block_t *wblock)
 static void
 pcapng_process_dsb(wtap *wth, wtapng_block_t *wblock)
 {
-    const wtapng_dsb_mandatory_t *dsb = (wtapng_dsb_mandatory_t*)wtap_block_get_mandatory_data(wblock->block);
-
-    if (wth->add_new_secrets) {
-        wth->add_new_secrets(dsb->secrets_type, dsb->secrets_data, dsb->secrets_len);
-    }
+    wtapng_process_dsb(wth, wblock->block);
 
     /* Store DSB such that it can be saved by the dumper. */
     g_array_append_val(wth->dsbs, wblock->block);
@@ -4314,7 +4317,7 @@ pcapng_write_if_descr_block(wtap_dumper *wdh, wtap_block_t int_data, int *err)
 
     pcapng_debug("pcapng_write_if_descr_block: encap = %d (%s), snaplen = %d",
                   mand_data->wtap_encap,
-                  wtap_encap_string(mand_data->wtap_encap),
+                  wtap_encap_description(mand_data->wtap_encap),
                   mand_data->snap_len);
 
     link_type = wtap_wtap_encap_to_pcap_encap(mand_data->wtap_encap);
@@ -4403,7 +4406,7 @@ static gboolean pcapng_dump(wtap_dumper *wdh,
 
     pcapng_debug("%s: encap = %d (%s) rec type = %u", G_STRFUNC,
                   rec->rec_header.packet_header.pkt_encap,
-                  wtap_encap_string(rec->rec_header.packet_header.pkt_encap),
+                  wtap_encap_description(rec->rec_header.packet_header.pkt_encap),
                   rec->rec_type);
 
     switch (rec->rec_type) {
@@ -4558,7 +4561,7 @@ int pcapng_dump_can_write_encap(int wtap_encap)
 {
     pcapng_debug("pcapng_dump_can_write_encap: encap = %d (%s)",
                   wtap_encap,
-                  wtap_encap_string(wtap_encap));
+                  wtap_encap_description(wtap_encap));
 
     /* Per-packet encapsulation is supported. */
     if (wtap_encap == WTAP_ENCAP_PER_PACKET)

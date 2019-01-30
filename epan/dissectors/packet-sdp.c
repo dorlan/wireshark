@@ -2347,7 +2347,7 @@ setup_sdp_transport(tvbuff_t *tvb, packet_info *pinfo, enum sdp_exchange_type ex
     DPRINT2(("-------------------- setup_sdp_transport -------------------"));
 
     /* Only do this once during first pass */
-    if (pinfo->fd->flags.visited) {
+    if (pinfo->fd->visited) {
         DPRINT(("already visited"));
         return;
     }
@@ -2543,7 +2543,7 @@ dissect_sdp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data)
 
     memset(&sdp_data, 0, sizeof(sdp_data));
 
-    if (!pinfo->fd->flags.visited) {
+    if (!pinfo->fd->visited) {
         transport_info = (transport_info_t*)wmem_tree_lookup32( sdp_transport_reqs, pinfo->num );
 
         if (transport_info == NULL) {
@@ -2751,7 +2751,7 @@ dissect_sdp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data)
 
     /* For messages not part of the Offer/Answer model, assume that the SDP is
      * immediately effective (apply it now). */
-    if ((!pinfo->fd->flags.visited) && (transport_info == &local_transport_info)) {
+    if ((!pinfo->fd->visited) && (transport_info == &local_transport_info)) {
         /* XXX - This is a placeholder for higher layer protocols that haven't implemented the proper
          * OFFER/ANSWER functionality using setup_sdp_transport().  Once all of the higher layers
          * use setup_sdp_transport(), this should be removed
@@ -2835,10 +2835,10 @@ dissect_sdp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data)
                 stored_setup_info = (sdp_setup_info_t *)wmem_array_index(sdp_conv_info_list, i);
                 if (stored_setup_info->hf_id) {
                     if (stored_setup_info->hf_type == SDP_TRACE_ID_HF_TYPE_STR) {
-                        item = proto_tree_add_string(sdp_tree, stored_setup_info->hf_id, tvb, 0, 0, stored_setup_info->trace_id);
+                        item = proto_tree_add_string(sdp_tree, stored_setup_info->hf_id, tvb, 0, 0, stored_setup_info->trace_id.str);
                         PROTO_ITEM_SET_GENERATED(item);
                     } else if (stored_setup_info->hf_type == SDP_TRACE_ID_HF_TYPE_GUINT32) {
-                        item = proto_tree_add_uint(sdp_tree, stored_setup_info->hf_id, tvb, 0, 0, stored_setup_info->trace_id_num);
+                        item = proto_tree_add_uint(sdp_tree, stored_setup_info->hf_id, tvb, 0, 0, stored_setup_info->trace_id.num);
                         PROTO_ITEM_SET_GENERATED(item);
                     }
                 }

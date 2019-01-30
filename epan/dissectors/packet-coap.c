@@ -117,6 +117,7 @@ static const value_string vals_code[] = {
 	{ 141, "4.13 Request Entity Too Large" },
 	{ 143, "4.15 Unsupported Content-Format" },
 	{ 150, "4.22 Unprocessable Entity" },		/* RFC8132 */
+	{ 157, "4.29 Too Many Requests" },		/* RFC8516 */
 	{ 160, "5.00 Internal Server Error" },
 	{ 161, "5.01 Not Implemented" },
 	{ 162, "5.02 Bad Gateway" },
@@ -1264,12 +1265,12 @@ proto_register_coap(void)
 		},
 		{ &hf_coap_response_in,
 		  { "Response In", "coap.response_in",
-		    FT_FRAMENUM, BASE_NONE, NULL, 0x0,
+		    FT_FRAMENUM, BASE_NONE, FRAMENUM_TYPE(FT_FRAMENUM_RESPONSE), 0x0,
 		    "The response to this CoAP request is in this frame", HFILL }
 		},
 		{ &hf_coap_response_to,
 		  { "Request In", "coap.response_to",
-		    FT_FRAMENUM, BASE_NONE, NULL, 0x0,
+		    FT_FRAMENUM, BASE_NONE, FRAMENUM_TYPE(FT_FRAMENUM_REQUEST), 0x0,
 		    "This is a response to the CoAP request in this frame", HFILL }
 		},
 		{ &hf_coap_response_time,

@@ -60,25 +60,17 @@ set_target_properties(wscodecs PROPERTIES
   LINK_FLAGS "${WS_LINK_FLAGS}"
   VERSION "0.0.0" SOVERSION 0
   FOLDER "DLLs"
+  INSTALL_RPATH "${LIBRARY_INSTALL_RPATH}"
 )
 
-if(ENABLE_APPLICATION_BUNDLE)
-  set_target_properties(wscodecs PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/run/Wireshark.app/Contents/Frameworks
-  )
-  if(NOT CMAKE_CFG_INTDIR STREQUAL ".")
-    # Xcode
-    set_target_properties(wscodecs PROPERTIES
-      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/run/$<CONFIG>/Wireshark.app/Contents/Frameworks
-    )
-  else()
-    set_target_properties(wscodecs PROPERTIES
-      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/run/Wireshark.app/Contents/Frameworks
-    )
-  endif()
-endif()
-
 target_link_libraries(wscodecs ${wscodecs_LIBS})
+
+target_include_directories(wscodecs SYSTEM
+	PRIVATE
+		${SBC_INCLUDE_DIRS}
+		${SPANDSP_INCLUDE_DIRS}
+		${BCG729_INCLUDE_DIRS}
+)
 
 install(TARGETS wscodecs
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

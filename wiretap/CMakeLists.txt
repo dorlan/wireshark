@@ -83,7 +83,6 @@ set(WIRETAP_NONGENERATED_FILES
 	vwr.c
 	wtap.c
 	wtap_opttypes.c
-	${CMAKE_SOURCE_DIR}/version_info.c
 )
 
 set(WIRETAP_FILES ${WIRETAP_NONGENERATED_FILES})
@@ -111,28 +110,14 @@ add_library(wiretap
 	${CMAKE_BINARY_DIR}/image/wiretap.rc
 )
 
-add_dependencies(wiretap version)
-
 set_target_properties(wiretap PROPERTIES
 	PREFIX "lib"
 	COMPILE_DEFINITIONS "WS_BUILD_DLL"
 	LINK_FLAGS "${WS_LINK_FLAGS}"
 	VERSION "0.0.0" SOVERSION 0
 	FOLDER "DLLs"
+	INSTALL_RPATH "${LIBRARY_INSTALL_RPATH}"
 )
-
-if(ENABLE_APPLICATION_BUNDLE)
-	if(NOT CMAKE_CFG_INTDIR STREQUAL ".")
-		# Xcode
-		set_target_properties(wiretap PROPERTIES
-			LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/run/$<CONFIG>/Wireshark.app/Contents/Frameworks
-		)
-	else()
-		set_target_properties(wiretap PROPERTIES
-			LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/run/Wireshark.app/Contents/Frameworks
-		)
-	endif()
-endif()
 
 ABICHECK(libwiretap)
 
@@ -148,10 +133,15 @@ add_custom_command(OUTPUT libwiretap.abi.tar.gz
 
 target_link_libraries(wiretap
 	PUBLIC
-	wsutil
-	${GLIB2_LIBRARIES}
+		wsutil
+		${GLIB2_LIBRARIES}
 	PRIVATE
-	${ZLIB_LIBRARIES}
+		${ZLIB_LIBRARIES}
+)
+
+target_include_directories(wiretap SYSTEM
+	PRIVATE
+		${ZLIB_INCLUDE_DIRS}
 )
 
 install(TARGETS wiretap

@@ -151,7 +151,7 @@ fi
 # features present in all three versions)
 LUA_VERSION=5.2.4
 SNAPPY_VERSION=1.1.4
-LIBXML2_VERSION=2.9.7
+LIBXML2_VERSION=2.9.9
 LZ4_VERSION=1.7.5
 SBC_VERSION=1.3
 CARES_VERSION=1.15.0
@@ -2580,7 +2580,7 @@ echo ""
 #
 pkg_config_path=/usr/local/lib/pkgconfig
 if [ "$QT_VERSION" ]; then
-    qt_base_path=$HOME/Qt$QT_VERSION/$QT_MAJOR_MINOR_VERSION/clang_64
+    qt_base_path=$HOME/Qt$QT_VERSION/$QT_VERSION/clang_64
     pkg_config_path="$pkg_config_path":"$qt_base_path/lib/pkgconfig"
     CMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH":"$qt_base_path/lib/cmake"
 fi

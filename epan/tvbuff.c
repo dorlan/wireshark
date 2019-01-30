@@ -1648,6 +1648,20 @@ tvb_get_string_bytes(tvbuff_t *tvb, const gint offset, const gint length,
 	return retval;
 }
 
+static gboolean
+parse_month_name(const char *name, int *tm_mon)
+{
+	static const char months[][4] = { "Jan", "Feb", "Mar", "Apr", "May",
+		"Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+	for (int i = 0; i < 12; i++) {
+		if (memcmp(months[i], name, 4) == 0) {
+			*tm_mon = i;
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
 /* support hex-encoded time values? */
 nstime_t*
 tvb_get_string_time(tvbuff_t *tvb, const gint offset, const gint length,
@@ -1791,19 +1805,42 @@ tvb_get_string_time(tvbuff_t *tvb, const gint offset, const gint length,
 			}
 		}
 		else if (encoding & ENC_RFC_822 || encoding & ENC_RFC_1123) {
-			if (encoding & ENC_RFC_822) {
-				/* this will unfortunately match ENC_RFC_1123 style
-				   strings too, partially - probably need to do this the long way */
-				end = strptime(ptr, "%a, %d %b %y %H:%M:%S", &tm);
-				if (!end) end = strptime(ptr, "%a, %d %b %y %H:%M", &tm);
-				if (!end) end = strptime(ptr, "%d %b %y %H:%M:%S", &tm);
-				if (!end) end = strptime(ptr, "%d %b %y %H:%M", &tm);
-			}
-			else if (encoding & ENC_RFC_1123) {
-				end = strptime(ptr, "%a, %d %b %Y %H:%M:%S", &tm);
-				if (!end) end = strptime(ptr, "%a, %d %b %Y %H:%M", &tm);
-				if (!end) end = strptime(ptr, "%d %b %Y %H:%M:%S", &tm);
-				if (!end) end = strptime(ptr, "%d %b %Y %H:%M", &tm);
+			/*
+			 * Match [dow,] day month year hh:mm[:ss] with two-digit
+			 * years (RFC 822) or four-digit years (RFC 1123). Skip
+			 * the day of week since it is locale dependent and does
+			 * not affect the resulting date anyway.
+			 */
+			if (g_ascii_isalpha(ptr[0]) && g_ascii_isalpha(ptr[1]) && g_ascii_isalpha(ptr[2]) && ptr[3] == ',')
+				ptr += 4;   /* Skip day of week. */
+			char month_name[4] = { 0 };
+			if (sscanf(ptr, "%d %3s %d %d:%d%n:%d%n",
+			    &tm.tm_mday,
+			    month_name,
+			    &tm.tm_year,
+			    &tm.tm_hour,
+			    &tm.tm_min,
+			    &num_chars,
+			    &tm.tm_sec,
+			    &num_chars) >= 5)
+			{
+				if (encoding & ENC_RFC_822) {
+					/* Match strptime behavior: years 00-68
+					 * are in the 21th century. */
+					if (tm.tm_year <= 68) {
+						tm.tm_year += 100;
+						matched = TRUE;
+					} else if (tm.tm_year <= 99) {
+						matched = TRUE;
+					}
+				} else if (encoding & ENC_RFC_1123) {
+					tm.tm_year -= 1900;
+					matched = TRUE;
+				}
+				if (!parse_month_name(month_name, &tm.tm_mon))
+					matched = FALSE;
+				if (matched)
+					end = ptr + num_chars;
 			}
 			if (end) {
 				errno = 0;
@@ -2809,12 +2846,24 @@ tvb_get_string_enc(wmem_allocator_t *scope, tvbuff_t *tvb, const gint offset,
 		strptr = tvb_get_string_unichar2(scope, tvb, offset, length, charset_table_cp1250);
 		break;
 
+	case ENC_WINDOWS_1251:
+		strptr = tvb_get_string_unichar2(scope, tvb, offset, length, charset_table_cp1251);
+		break;
+
 	case ENC_MAC_ROMAN:
 		strptr = tvb_get_string_unichar2(scope, tvb, offset, length, charset_table_mac_roman);
 		break;
 
 	case ENC_CP437:
 		strptr = tvb_get_string_unichar2(scope, tvb, offset, length, charset_table_cp437);
+		break;
+
+	case ENC_CP855:
+		strptr = tvb_get_string_unichar2(scope, tvb, offset, length, charset_table_cp855);
+		break;
+
+	case ENC_CP866:
+		strptr = tvb_get_string_unichar2(scope, tvb, offset, length, charset_table_cp866);
 		break;
 
 	case ENC_3GPP_TS_23_038_7BITS:
@@ -3703,6 +3752,73 @@ tvb_skip_guint8(tvbuff_t *tvb, int offset, const int maxlength, const guint8 ch)
 	}
 
 	return offset;
+}
+
+static ws_mempbrk_pattern pbrk_whitespace;
+
+int tvb_get_token_len(tvbuff_t *tvb, const gint offset, int len, gint *next_offset, const gboolean desegment)
+{
+	gint   eob_offset;
+	gint   eot_offset;
+	int    tokenlen;
+	guchar found_needle = 0;
+	static gboolean compiled = FALSE;
+
+	DISSECTOR_ASSERT(tvb && tvb->initialized);
+
+	if (len == -1) {
+		len = _tvb_captured_length_remaining(tvb, offset);
+		/* if offset is past the end of the tvbuff, len is now 0 */
+	}
+
+	eob_offset = offset + len;
+
+	if (!compiled) {
+		ws_mempbrk_compile(&pbrk_whitespace, " \r\n");
+		compiled = TRUE;
+	}
+
+	/*
+	* Look either for a space, CR, or LF.
+	*/
+	eot_offset = tvb_ws_mempbrk_pattern_guint8(tvb, offset, len, &pbrk_whitespace, &found_needle);
+	if (eot_offset == -1) {
+		/*
+		* No space, CR or LF - token is presumably continued in next packet.
+		*/
+		if (desegment) {
+			/*
+			* Tell our caller we saw no whitespace, so they can
+			* try to desegment and get the entire line
+			* into one tvbuff.
+			*/
+			return -1;
+		}
+		else {
+			/*
+			* Pretend the token runs to the end of the tvbuff.
+			*/
+			tokenlen = eob_offset - offset;
+			if (next_offset)
+				*next_offset = eob_offset;
+		}
+	}
+	else {
+		/*
+		* Find the number of bytes between the starting offset
+		* and the space, CR or LF.
+		*/
+		tokenlen = eot_offset - offset;
+
+		/*
+		* Return the offset of the character after the last
+		* character in the line, skipping over the last character
+		* in the line terminator.
+		*/
+		if (next_offset)
+			*next_offset = eot_offset + 1;
+	}
+	return tokenlen;
 }
 
 /*

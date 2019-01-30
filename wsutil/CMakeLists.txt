@@ -20,8 +20,6 @@ set(WSUTIL_PUBLIC_HEADERS
 	bits_ctz.h
 	bitswap.h
 	buffer.h
-	clopts_common.h
-	cmdarg_err.h
 	color.h
 	copyright_info.h
 	cpu_info.h
@@ -80,8 +78,6 @@ set(WSUTIL_COMMON_FILES
 	base32.c
 	bitswap.c
 	buffer.c
-	clopts_common.c
-	cmdarg_err.c
 	copyright_info.c
 	crash_info.c
 	crc10.c
@@ -247,21 +243,8 @@ set_target_properties(wsutil PROPERTIES
 	LINK_FLAGS "${WS_LINK_FLAGS}"
 	VERSION "0.0.0" SOVERSION 0
 	FOLDER "DLLs"
+	INSTALL_RPATH "${LIBRARY_INSTALL_RPATH}"
 )
-
-if(ENABLE_APPLICATION_BUNDLE)
-
-	if(NOT CMAKE_CFG_INTDIR STREQUAL ".")
-		# Xcode
-		set_target_properties(wsutil PROPERTIES
-			LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/run/$<CONFIG>/Wireshark.app/Contents/Frameworks
-		)
-	else()
-		set_target_properties(wsutil PROPERTIES
-			LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/run/Wireshark.app/Contents/Frameworks
-		)
-	endif()
-endif()
 
 ABICHECK(libwsutil)
 
@@ -281,6 +264,7 @@ target_link_libraries(wsutil
 	${APPLE_CORE_FOUNDATION_LIBRARY}
 	${GMODULE2_LIBRARIES}
 	${GLIB2_LIBRARIES}
+	${PCAP_LIBRARIES}
 	${GCRYPT_LIBRARIES}
 	${WIN_WSOCK32_LIBRARY}
 	${GNUTLS_LIBRARIES}
@@ -289,6 +273,13 @@ target_link_libraries(wsutil
 if(WIN32)
 	target_link_libraries(wsutil PRIVATE "iphlpapi.lib" "ws2_32.lib")
 endif(WIN32)
+
+target_include_directories(wsutil SYSTEM
+	PUBLIC
+		${PCAP_INCLUDE_DIRS}
+		${GCRYPT_INCLUDE_DIRS}
+		${GNUTLS_INCLUDE_DIRS}
+)
 
 install(TARGETS wsutil
 	EXPORT WiresharkTargets
@@ -305,7 +296,7 @@ CHECKAPI(
 	NAME
 	  wsutil
 	SWITCHES
-	  --group termoutput:1 --summary-group termoutput --build
+	  --group termoutput:2 --summary-group termoutput --build
 	SOURCES
 	  ${WSUTIL_COMMON_FILES}
 )

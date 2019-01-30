@@ -88,7 +88,7 @@ static int hf_megaco_error_descriptor           = -1;
 static int hf_megaco_error_code                 = -1;
 static int hf_megaco_error_string               = -1;
 static int hf_megaco_TerminationState_descriptor= -1;
-/* static int hf_megaco_Remote_descriptor          = -1; */
+static int hf_megaco_Remote_descriptor          = -1;
 static int hf_megaco_LocalControl_descriptor    = -1;
 static int hf_megaco_packages_descriptor        = -1;
 static int hf_megaco_Service_State              = -1;
@@ -329,14 +329,14 @@ megacostat_filtercheck(const char *opt_arg _U_, const char **filter _U_, char** 
     }
 }
 
-static int
+static tap_packet_status
 megacostat_packet(void *pms, packet_info *pinfo, epan_dissect_t *edt _U_, const void *pmi)
 {
     rtd_data_t* rtd_data = (rtd_data_t*)pms;
     rtd_stat_table* ms = &rtd_data->stat_table;
     const gcp_cmd_t *mi=(const gcp_cmd_t*)pmi;
     nstime_t delta;
-    int ret = 0;
+    tap_packet_status ret = TAP_PACKET_DONT_REDRAW;
 
     switch (mi->type) {
 
@@ -344,7 +344,7 @@ megacostat_packet(void *pms, packet_info *pinfo, epan_dissect_t *edt _U_, const 
         if(!mi->trx->initial) {
             /* Track Context is probably disabled, we cannot
                 * measure service response time */
-            return 0;
+            return TAP_PACKET_DONT_REDRAW;
         }
 
         else if(mi->trx->initial->framenum != mi->msg->framenum){
@@ -407,7 +407,7 @@ megacostat_packet(void *pms, packet_info *pinfo, epan_dissect_t *edt _U_, const 
             }
 
             time_stat_update(&(ms->time_stats[0].rtd[10]),&delta, pinfo);
-            ret = 1;
+            ret = TAP_PACKET_REDRAW;
         }
         break;
 
@@ -449,7 +449,7 @@ dissect_megaco_errordescriptor(tvbuff_t *tvb, packet_info* pinfo, proto_tree *tr
 static void
 dissect_megaco_TerminationStatedescriptor(tvbuff_t *tvb, proto_tree *tree, gint tvb_next_offset, gint tvb_current_offset);
 static void
-dissect_megaco_Localdescriptor(tvbuff_t *tvb, proto_tree *tree, packet_info *pinfo, gint tvb_next_offset, gint tvb_current_offset, guint32 context);
+dissect_megaco_LocalRemotedescriptor(tvbuff_t *tvb, proto_tree *tree, packet_info *pinfo, gint tvb_next_offset, gint tvb_current_offset, guint32 context, gboolean is_local);
 static void
 dissect_megaco_LocalControldescriptor(tvbuff_t *tvb, proto_tree *tree, packet_info *pinfo, gint tvb_next_offset, gint tvb_current_offset, proto_tree *top_tree);
 static void
@@ -1772,14 +1772,14 @@ dissect_megaco_mediadescriptor(tvbuff_t *tvb, proto_tree *megaco_tree_command_li
         switch ( mediaParm ){
         case MEGACO_LOCAL_TOKEN:
             tvb_current_offset = megaco_tvb_skip_wsp(tvb, tvb_LBRKT+1);
-            dissect_megaco_Localdescriptor(tvb, megaco_mediadescriptor_tree, pinfo,
-                tvb_RBRKT, tvb_current_offset, context);
+            dissect_megaco_LocalRemotedescriptor(tvb, megaco_mediadescriptor_tree, pinfo,
+                tvb_RBRKT, tvb_current_offset, context, TRUE);
             tvb_current_offset = tvb_RBRKT;
             break;
         case MEGACO_REMOTE_TOKEN:
             tvb_current_offset = megaco_tvb_skip_wsp(tvb, tvb_LBRKT+1);
-            dissect_megaco_Localdescriptor(tvb, megaco_mediadescriptor_tree, pinfo,
-                tvb_RBRKT, tvb_current_offset, context);
+            dissect_megaco_LocalRemotedescriptor(tvb, megaco_mediadescriptor_tree, pinfo,
+                tvb_RBRKT, tvb_current_offset, context, FALSE);
             tvb_current_offset = tvb_RBRKT;
             break;
         case MEGACO_LOCAL_CONTROL_TOKEN:
@@ -3017,20 +3017,20 @@ dissect_megaco_TerminationStatedescriptor(tvbuff_t *tvb, proto_tree *megaco_medi
 }
 
 static void
-dissect_megaco_Localdescriptor(tvbuff_t *tvb, proto_tree *megaco_mediadescriptor_tree,packet_info *pinfo, gint tvb_next_offset, gint tvb_current_offset, guint32 context)
+dissect_megaco_LocalRemotedescriptor(tvbuff_t *tvb, proto_tree *megaco_mediadescriptor_tree, packet_info *pinfo,
+                          gint tvb_next_offset, gint tvb_current_offset, guint32 context, gboolean is_local)
 {
     gint tokenlen;
     tvbuff_t *next_tvb;
-    http_message_info_t message_info = { SIP_DATA, NULL, NULL };
+    http_message_info_t message_info = { SIP_DATA, NULL, NULL, NULL };
 
     sdp_setup_info_t setup_info;
 
     /* Only fill in the info when we have valid contex */
     if ((context != 0) && (context < 0xfffffffe)) {
-        setup_info.setup_proto = g_strdup("MEGACO");
         setup_info.hf_id = hf_megaco_Context;
         setup_info.hf_type = SDP_TRACE_ID_HF_TYPE_GUINT32;
-        setup_info.trace_id_num = context;
+        setup_info.trace_id.num = context;
         message_info.data = &setup_info;
     }
 
@@ -3039,8 +3039,13 @@ dissect_megaco_Localdescriptor(tvbuff_t *tvb, proto_tree *megaco_mediadescriptor
 
     tokenlen = tvb_next_offset - tvb_current_offset;
 
-    megaco_localdescriptor_item = proto_tree_add_item(megaco_mediadescriptor_tree, hf_megaco_Local_descriptor, tvb, tvb_current_offset, tokenlen, ENC_NA);
-    megaco_localdescriptor_tree = proto_item_add_subtree(megaco_localdescriptor_item, ett_megaco_Localdescriptor);
+    if (is_local) {
+        megaco_localdescriptor_item = proto_tree_add_item(megaco_mediadescriptor_tree, hf_megaco_Local_descriptor, tvb, tvb_current_offset, tokenlen, ENC_NA);
+        megaco_localdescriptor_tree = proto_item_add_subtree(megaco_localdescriptor_item, ett_megaco_Localdescriptor);
+    } else {
+        megaco_localdescriptor_item = proto_tree_add_item(megaco_mediadescriptor_tree, hf_megaco_Remote_descriptor, tvb, tvb_current_offset, tokenlen, ENC_NA);
+        megaco_localdescriptor_tree = proto_item_add_subtree(megaco_localdescriptor_item, ett_megaco_Remotedescriptor);
+    }
 
     if ( tokenlen > 3 ){
         next_tvb = tvb_new_subset_length(tvb, tvb_current_offset, tokenlen);
@@ -3653,11 +3658,9 @@ proto_register_megaco(void)
         { &hf_megaco_pkgdname,
           { "pkgdName", "megaco.pkgdname", FT_STRING, BASE_NONE, NULL, 0x0,
             "PackageName SLASH ItemID", HFILL }},
-#if 0
         { &hf_megaco_Remote_descriptor,
-          { "Remote Descriptor", "megaco.remotedescriptor", FT_STRING, BASE_NONE, NULL, 0x0,
+          { "Remote Descriptor", "megaco.remotedescriptor", FT_NONE, BASE_NONE, NULL, 0x0,
             "Remote Descriptor in Media Descriptor", HFILL }},
-#endif
         { &hf_megaco_reserve_group,
           { "Reserve Group", "megaco.reservegroup", FT_STRING, BASE_NONE, NULL, 0x0,
             "Reserve Group on or off", HFILL }},

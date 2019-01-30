@@ -59,7 +59,7 @@
  *      dissector versions was dissected only when a proto_tree context was
  *      available
  *
- *     We are at Packet reception if time pinfo->fd->flags.visited == 0
+ *     We are at Packet reception if time pinfo->fd->visited == 0
  *
  */
 
@@ -310,6 +310,16 @@ ssl_cleanup(void)
     ssl_crandom_hash = NULL;
 }
 
+ssl_master_key_map_t *
+tls_get_master_key_map(gboolean load_secrets)
+{
+    // Try to load new keys.
+    if (load_secrets) {
+        ssl_load_keyfile(ssl_options.keylog_filename, &ssl_keylog_file, &ssl_master_key_map);
+    }
+    return &ssl_master_key_map;
+}
+
 #ifdef HAVE_LIBGNUTLS
 /* parse ssl related preferences (private keys and ports association strings) */
 static void
@@ -393,7 +403,7 @@ ssl_parse_old_keys(void)
 #endif  /* HAVE_LIBGNUTLS */
 
 
-static gboolean
+static tap_packet_status
 ssl_follow_tap_listener(void *tapdata, packet_info *pinfo, epan_dissect_t *edt _U_, const void *ssl)
 {
     follow_info_t *      follow_info = (follow_info_t*) tapdata;
@@ -403,7 +413,7 @@ ssl_follow_tap_listener(void *tapdata, packet_info *pinfo, epan_dissect_t *edt _
     show_stream_t        from = FROM_CLIENT;
 
     /* Skip packets without decrypted payload data. */
-    if (!pi || !pi->records) return FALSE;
+    if (!pi || !pi->records) return TAP_PACKET_DONT_REDRAW;
 
     /* Compute the packet's sender. */
     if (follow_info->client_port == 0) {
@@ -455,7 +465,7 @@ ssl_follow_tap_listener(void *tapdata, packet_info *pinfo, epan_dissect_t *edt _
         follow_info->bytes_written[from] += appl_data->data_len;
     }
 
-    return FALSE;
+    return TAP_PACKET_DONT_REDRAW;
 }
 
 /*********************************************************************
@@ -585,7 +595,7 @@ dissect_ssl(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_)
         }
     }
 
-    ssl_debug_printf("\ndissect_ssl enter frame #%u (%s)\n", pinfo->num, (pinfo->fd->flags.visited)?"already visited":"first time");
+    ssl_debug_printf("\ndissect_ssl enter frame #%u (%s)\n", pinfo->num, (pinfo->fd->visited)?"already visited":"first time");
 
     /* Track the version using conversations to reduce the
      * chance that a packet that simply *looks* like a v2 or
@@ -613,7 +623,7 @@ dissect_ssl(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_)
 
     /* try decryption only the first time we see this packet
      * (to keep cipher synchronized) */
-    if (pinfo->fd->flags.visited)
+    if (pinfo->fd->visited)
          ssl_session = NULL;
 
     ssl_debug_printf("  conversation = %p, ssl_session = %p\n", (void *)conversation, (void *)ssl_session);
@@ -789,7 +799,7 @@ dissect_tls13_handshake(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, voi
     SslSession        *session;
     gint               is_from_server;
 
-    ssl_debug_printf("\n%s enter frame #%u (%s)\n", G_STRFUNC, pinfo->num, (pinfo->fd->flags.visited)?"already visited":"first time");
+    ssl_debug_printf("\n%s enter frame #%u (%s)\n", G_STRFUNC, pinfo->num, (pinfo->fd->visited)?"already visited":"first time");
 
     conversation = find_or_create_conversation(pinfo);
     ssl_session = ssl_get_session(conversation, tls_handle);
@@ -4160,7 +4170,7 @@ proto_register_tls(void)
              "Message Authentication Code (MAC), ignore \"mac failed\"",
              "For troubleshooting ignore the mac check result and decrypt also if the Message Authentication Code (MAC) fails.",
              &tls_ignore_mac_failed);
-        ssl_common_register_options(ssl_module, &ssl_options);
+        ssl_common_register_options(ssl_module, &ssl_options, FALSE);
     }
 
     /* heuristic dissectors for any premable e.g. CredSSP before RDP */

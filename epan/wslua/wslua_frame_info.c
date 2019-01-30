@@ -207,6 +207,7 @@ WSLUA_ATTRIBUTE_NAMED_NUMBER_SETTER(FrameInfo,original_length,rec->rec_header.pa
 WSLUA_ATTRIBUTE_NAMED_NUMBER_GETTER(FrameInfo,encap,rec->rec_header.packet_header.pkt_encap);
 WSLUA_ATTRIBUTE_NAMED_NUMBER_SETTER(FrameInfo,encap,rec->rec_header.packet_header.pkt_encap,int);
 
+// rec->opt_comment will be freed by wtap_sequential_close -> wtap_rec_cleanup.
 /* WSLUA_ATTRIBUTE FrameInfo_comment RW A string comment for the packet, if the
     `wtap_presence_flags.COMMENTS` was set in the presence flags; nil if there is no comment. */
 WSLUA_ATTRIBUTE_NAMED_STRING_GETTER(FrameInfo,comment,rec->opt_comment);
@@ -239,8 +240,7 @@ WSLUA_META FrameInfo_meta[] = {
 };
 
 int FrameInfo_register(lua_State* L) {
-    WSLUA_REGISTER_CLASS(FrameInfo);
-    WSLUA_REGISTER_ATTRIBUTES(FrameInfo);
+    WSLUA_REGISTER_CLASS_WITH_ATTRS(FrameInfo);
     return 0;
 }
 
@@ -384,8 +384,7 @@ WSLUA_META FrameInfoConst_meta[] = {
 };
 
 int FrameInfoConst_register(lua_State* L) {
-    WSLUA_REGISTER_CLASS(FrameInfoConst);
-    WSLUA_REGISTER_ATTRIBUTES(FrameInfoConst);
+    WSLUA_REGISTER_CLASS_WITH_ATTRS(FrameInfoConst);
     return 0;
 }
 

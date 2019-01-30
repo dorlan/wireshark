@@ -325,7 +325,8 @@ RtpAnalysisDialog::RtpAnalysisDialog(QWidget &parent, CaptureFile &cf, rtpstream
         ui->actionSaveReverseAudioSyncFile->setEnabled(false);
     }
 
-    QMenu *save_menu = new QMenu();
+    QPushButton *save_bt = ui->buttonBox->button(QDialogButtonBox::Save);
+    QMenu *save_menu = new QMenu(save_bt);
     save_menu->addAction(ui->actionSaveAudioUnsync);
     save_menu->addAction(ui->actionSaveForwardAudioUnsync);
     save_menu->addAction(ui->actionSaveReverseAudioUnsync);
@@ -343,7 +344,7 @@ RtpAnalysisDialog::RtpAnalysisDialog(QWidget &parent, CaptureFile &cf, rtpstream
     save_menu->addAction(ui->actionSaveReverseCsv);
     save_menu->addSeparator();
     save_menu->addAction(ui->actionSaveGraph);
-    ui->buttonBox->button(QDialogButtonBox::Save)->setMenu(save_menu);
+    save_bt->setMenu(save_menu);
 
     if (stream_fwd) { // XXX What if stream_fwd == 0 && stream_rev != 0?
         rtpstream_info_copy_deep(&fwd_statinfo_, stream_fwd);
@@ -656,20 +657,20 @@ void RtpAnalysisDialog::tapReset(void *tapinfo_ptr)
     rtp_analysis_dialog->resetStatistics();
 }
 
-gboolean RtpAnalysisDialog::tapPacket(void *tapinfo_ptr, packet_info *pinfo, epan_dissect_t *, const void *rtpinfo_ptr)
+tap_packet_status RtpAnalysisDialog::tapPacket(void *tapinfo_ptr, packet_info *pinfo, epan_dissect_t *, const void *rtpinfo_ptr)
 {
     RtpAnalysisDialog *rtp_analysis_dialog = dynamic_cast<RtpAnalysisDialog *>((RtpAnalysisDialog*)tapinfo_ptr);
-    if (!rtp_analysis_dialog) return FALSE;
+    if (!rtp_analysis_dialog) return TAP_PACKET_DONT_REDRAW;
 
     const struct _rtp_info *rtpinfo = (const struct _rtp_info *)rtpinfo_ptr;
-    if (!rtpinfo) return FALSE;
+    if (!rtpinfo) return TAP_PACKET_DONT_REDRAW;
 
     /* we ignore packets that are not displayed */
-    if (pinfo->fd->flags.passed_dfilter == 0)
-        return FALSE;
+    if (pinfo->fd->passed_dfilter == 0)
+        return TAP_PACKET_DONT_REDRAW;
     /* also ignore RTP Version != 2 */
     else if (rtpinfo->info_version != 2)
-        return FALSE;
+        return TAP_PACKET_DONT_REDRAW;
     /* is it the forward direction?  */
     else if (rtpstream_id_equal_pinfo_rtp_info(&(rtp_analysis_dialog->fwd_statinfo_.id),pinfo,rtpinfo))  {
 
@@ -680,7 +681,7 @@ gboolean RtpAnalysisDialog::tapPacket(void *tapinfo_ptr, packet_info *pinfo, epa
 
         rtp_analysis_dialog->addPacket(false, pinfo, rtpinfo);
     }
-    return FALSE;
+    return TAP_PACKET_DONT_REDRAW;
 }
 
 void RtpAnalysisDialog::tapDraw(void *tapinfo_ptr)

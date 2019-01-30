@@ -71,7 +71,7 @@ set(PRODUCT_VERSION ${PROJECT_MAJOR_VERSION}.${PROJECT_MINOR_VERSION}.${PROJECT_
 
 # To do:
 # - Sync the various version names between CMake and Wix.
-# - Set CMakeLists.txt version strings in make-version.pl
+# - Set CMakeLists.txt version strings in tools/make-version.pl
 # - Add a VERSION_EXTRA cmake option
 set (VERSION "${PROJECT_VERSION}")
 set (PRODUCT_VERSION=${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_MICRO}.${VERSION_BUILD})
@@ -99,8 +99,8 @@ find_path(MERGE_MODULE_DIR ${MERGE_MODULE}
 		"$ENV{PROGRAMFILES}/Common Files/Merge Modules"
 	NO_DEFAULT_PATH
 )
-
-message(STATUS "Using ${MERGE_MODULE_DIR}/Microsoft_${MSVC_CRT_VERSION}_CRT_${TARGET_MACHINE}.msm for the WiX installer")
+file(TO_NATIVE_PATH "${MERGE_MODULE_DIR}/Microsoft_${MSVC_CRT_VERSION}_CRT_${TARGET_MACHINE}.msm" MSM_NATIVE_PATH)
+message(STATUS "Using ${MSM_NATIVE_PATH} for the WiX installer")
 
 # DependentComponents.wxi. Can be created at configure time.
 set(_all_manifest_wix "${CMAKE_CURRENT_BINARY_DIR}/DependentComponents.wxs")
@@ -172,6 +172,7 @@ if (MAXMINDDB_FOUND)
 endif()
 
 set(WIX_CANDLE_DEFINES
+	-v
 	-sw1076
 	-dPlatform=${TARGET_MACHINE}
 	-dWiresharkName=${CMAKE_PROJECT_NAME}
@@ -198,6 +199,7 @@ set(WIX_CANDLE_DEFINES
 
 # The NSIS CMakeFile sets the program name + version slightly differently.
 set(WIX_LIGHT_DEFINES
+	-v
 	-out ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}-${WIRESHARK_TARGET_PLATFORM}-${PROJECT_VERSION}.msi
 	-sw1076
 	-ext WixUIExtension
@@ -206,6 +208,7 @@ set(WIX_LIGHT_DEFINES
 )
 
 set(WIX_HEAT_FLAGS
+	-v
 	-ag
 	-nologo
 	-srd

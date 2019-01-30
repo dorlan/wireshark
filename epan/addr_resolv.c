@@ -892,7 +892,7 @@ fill_dummy_ip4(const guint addr, hashipv4_t* volatile tp)
         gchar* paddr;
         gsize i;
 
-        host_addr = addr & (~(guint32)subnet_entry.mask);
+        host_addr = addr & (~subnet_entry.mask);
         ip_to_str_buf((guint8 *)&host_addr, buffer, WS_INET_ADDRSTRLEN);
         paddr = buffer;
 
@@ -2668,8 +2668,8 @@ addr_resolve_pref_init(module_t *nameres)
             "Resolve network (IP) addresses",
             "Resolve IPv4, IPv6, and IPX addresses into host names."
             " The next set of check boxes determines how name resolution should be performed."
-            " If no other options are checked name resolution is made from Wireshark's host file,"
-            " capture file name resolution blocks and DNS packets in the capture.",
+            " If no other options are checked name resolution is made from Wireshark's host file"
+            " and capture file name resolution blocks.",
             &gbl_resolv_flags.network_name);
 
     prefs_register_bool_preference(nameres, "dns_pkt_addr_resolution",
